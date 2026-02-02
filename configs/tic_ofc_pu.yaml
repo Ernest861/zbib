@@ -1,0 +1,106 @@
+# ═══════════════════════════════════════════════
+# 抽动症 × OFC × Premonitory Urges — 文献空白分析
+# ═══════════════════════════════════════════════
+
+name: tic_ofc_pu
+title_zh: OFC与抽动症前驱冲动
+title_en: OFC and Premonitory Urges in Tic Disorders
+suptitle: "抽动症×OFC×Premonitory Urges: 全球研究格局    Tic Disorders × OFC × Premonitory Urges: Landscape"
+
+# ── 数据源查询 ──
+disease_cn_keyword: "抽动"
+disease_cn_filter: "抽动症|抽动障碍|Tourette|图雷特"
+disease_en_query: '("tic disorder" OR "Tourette" OR "tic disorders" OR "chronic tic")'
+
+# ── Panel标题 ──
+panel_a_title: "A  抽动症研究全景：NSFC vs NIH"
+panel_b_title: "B  NSFC研究方向构成演变"
+panel_d_title: "D  研究空白"
+
+# ── 症状维度 ──
+symptoms:
+  Premonitory Urge: 'premonitory urge|premonitory sensation|urge to tic|sensory phenomenon|前驱冲动|前驱感'
+  Motor Tic: 'motor tic|simple tic|complex tic|运动性抽动'
+  Vocal Tic: 'vocal tic|phonic tic|coprolalia|发声性抽动'
+  Comorbidity: 'OCD|obsessive|ADHD|attention deficit|comorbid|共病'
+
+# ── 脑区靶点 ──
+targets:
+  OFC: 'orbitofrontal|\bOFC\b|眶额'
+  SMA: 'supplementary motor|SMA|辅助运动'
+  Basal Ganglia: 'basal ganglia|striatum|caudate|putamen|基底节|纹状体'
+  ACC: 'anterior cingulate|\bACC\b|前扣带'
+  Insula: 'insula|insular|脑岛'
+
+highlight_target: OFC
+
+# ── 热力图维度 ──
+heatmap_symptoms:
+  Premonitory Urge: 'premonitory urge|premonitory sensation|urge to tic|sensory phenomenon'
+  Motor Tic: 'motor tic|simple tic|complex tic'
+  Vocal Tic: 'vocal tic|phonic tic|coprolalia'
+  Comorbidity: 'OCD|obsessive|ADHD|attention deficit|comorbid'
+
+heatmap_targets:
+  OFC: 'orbitofrontal|\bOFC\b'
+  SMA: 'supplementary motor|SMA'
+  BG: 'basal ganglia|striatum|caudate|putamen'
+  ACC: 'anterior cingulate|\bACC\b'
+  Insula: 'insula|insular'
+
+highlight_annotation: "OFC\n仅{n}篇"
+
+# ── Gap分析 ──
+gap_patterns:
+  ofc: 'orbitofrontal|\bOFC\b|眶额'
+  pu_en: 'premonitory urge|premonitory sensation|urge to tic|sensory phenomenon'
+  pu_cn: '前驱冲动|前驱感|感觉先兆'
+  tms_cn: '经颅磁|TMS|rTMS|经颅超声|TUS'
+
+gap_combinations:
+  PubMed_OFC_Neg: [ofc, pu_en]
+  NIH_OFC: [ofc]
+  NIH_Neg: [pu_en]
+  NIH_OFC_Neg: [ofc, pu_en]
+  NSFC_OFC_TMS: [ofc, tms_cn]
+
+# ── Panel E: 占位 ──
+panel_e_title: "E  OFC + Premonitory Urges: 研究空白"
+panel_e_summary: "待分析后填充"
+key_papers: []
+
+# ── 类别合并映射 (复用神经科学默认) ──
+nsfc_merge_map:
+  神经递质: "环路/机制"
+  动物模型: "其他"
+  流行病/康复: "其他"
+  电生理: "其他"
+
+nih_to_zh_map:
+  Neuromodulation: "神经调控"
+  Clinical/Pharma: "临床/药物"
+  Neuroimaging: "神经影像"
+  Electrophysiology: "其他"
+  Genetics/Omics: "遗传/组学"
+  Immune/Metabolic: "免疫/代谢"
+  Circuit/Mechanism: "环路/机制"
+  Neurotransmitter: "环路/机制"
+  Cognition/Behavior: "认知/行为"
+  Animal Model: "其他"
+  Epidemiology/Rehab: "其他"
+  Other: "其他"
+
+display_cats:
+  - 神经调控
+  - 环路/机制
+  - 免疫/代谢
+  - 神经影像
+  - 遗传/组学
+  - 临床/药物
+  - 认知/行为
+  - 其他
+
+period_labels: ['99-05', '06-08', '09-11', '12-14', '15-17', '18-20', '21-23']
+period_ranges: [[1999,2005], [2006,2008], [2009,2011], [2012,2014], [2015,2017], [2018,2020], [2021,2023]]
+
+data_dir: "../nsfc_data/抽动症_OFC_premonitory_urges_20260130"

@@ -1,0 +1,11 @@
+{
+  "command": "run_all.py -c projects/成瘾_TPJ_社交_20260201/parameters/成瘾_TPJ_社交_20260201.yaml --step 6",
+  "config_file": "成瘾_TPJ_社交_20260201.yaml",
+  "python": "/Users/macbear/SynologyDrive/1HLab/5. Project/2026hq/zbib/venv/bin/python",
+  "cwd": "/Users/macbear/SynologyDrive/1HLab/5. Project/2026hq/zbib",
+  "created": "2026-02-01T18:06:38.796016",
+  "steps_executed": [
+    "2026-02-01T18:05:12.349568 analyze_and_plot"
+  ],
+  "reproduce": "/Users/macbear/SynologyDrive/1HLab/5. Project/2026hq/zbib/venv/bin/python run_all.py -c 成瘾_TPJ_社交_20260201.yaml --step 6"
+}

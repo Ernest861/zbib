@@ -1,0 +1,41 @@
+name: 肥胖_ofc_OE
+title_zh: 肥胖 + OFC + Over eating 文献空白分析
+title_en: Obesity Literature Gap Analysis
+disease_cn_keyword: 肥胖
+disease_cn_filter: 肥胖
+disease_en_query: Obesity
+data_dir: ../nsfc_data/肥胖_OFC_OE_20260131
+project_dir: 肥胖_OFC_OE_20260131
+intervention_query_en: (TMS OR rTMS OR tDCS OR "brain stimulation" OR TUS OR DBS OR
+  "theta burst" OR ECT OR "photobiomodulation" OR PBM)
+intervention_pattern_cn: 经颅磁|TMS|rTMS|tDCS|经颅直流|经颅电|神经调控|脑刺激|磁刺激|电刺激|DBS|深部脑|theta.?burst|TBS|超声刺激|TUS|光刺激|光调控|PBM|ECT|电休克
+intervention_pattern_en: transcranial magnetic|\bTMS\b|\brTMS\b|\btDCS\b|transcranial
+  direct|brain stimulation|transcranial ultrasound|\bTUS\b|\bDBS\b|deep brain stimul|theta.?burst|\bECT\b|electroconvulsive|photobiomodulation|\bPBM\b
+symptoms:
+  Over eating: '|暴食'
+targets:
+  OFC: '|眶额叶'
+highlight_target: OFC
+gap_patterns:
+  ofc: ''
+  ofc_cn: 眶额叶
+  neg: ''
+  neg_cn: 暴食
+  tms_cn: 经颅磁|TMS|rTMS|tDCS|经颅直流|经颅电|神经调控|脑刺激|磁刺激|电刺激|DBS|深部脑|theta.?burst|TBS|超声刺激|TUS|光刺激|光调控|PBM|ECT|电休克
+gap_combinations:
+  PubMed_OFC_Neg:
+  - ofc
+  - neg
+  NIH_OFC:
+  - ofc
+  NIH_Neg:
+  - neg
+  NIH_OFC_Neg:
+  - ofc
+  - neg
+  NSFC_OFC_TMS:
+  - ofc_cn
+  - tms_cn
+key_papers: []
+panel_e_title: E  OFC + Over eating 关键文献
+panel_e_summary: (待填充)

@@ -1,0 +1,84 @@
+name: 成瘾_TPJ_社交
+title_zh: 成瘾 + TPJ + 社交关系 文献空白分析
+title_en: Addiction × TPJ × Social Relationships Gap Analysis
+disease_cn_keyword: 成瘾
+disease_cn_filter: 成瘾
+disease_en_query: addiction
+data_dir: ../nsfc_data
+project_dir: 成瘾_TPJ_社交_20260201
+
+intervention_query_en: (TMS OR rTMS OR tDCS OR "brain stimulation" OR TUS OR DBS OR
+  "theta burst" OR ECT)
+intervention_pattern_cn: 经颅磁|TMS|rTMS|tDCS|经颅直流|经颅电|神经调控|脑刺激|磁刺激|电刺激|DBS|深部脑|theta.?burst|TBS|超声刺激|TUS|ECT|电休克
+intervention_pattern_en: transcranial magnetic|\bTMS\b|\brTMS\b|\btDCS\b|transcranial
+  direct|brain stimulation|transcranial ultrasound|\bTUS\b|\bDBS\b|deep brain stimul|theta.?burst|\bECT\b|electroconvulsive
+
+symptoms:
+  Social network: social.?network|social.?relationship|social.?support|social.?connect|social.?isolation|interpersonal|peer.?influence|社交网络|社交关系|社会支持|社会隔离|人际
+  Craving: craving|urge|渴求|渴望
+  Relapse: relapse|reinstatement|复发|复吸
+  Impulsivity: impulsiv|inhibitory control|impulse control|冲动|抑制控制
+  Reward: reward|reinforc|奖赏|强化
+
+targets:
+  TPJ: temporo.?parietal junction|\bTPJ\b|颞顶联合区|颞顶交界
+  DLPFC: dorsolateral prefrontal|\bDLPFC\b|背外侧前额叶
+  vmPFC: ventromedial prefrontal|\bvmPFC\b|腹内侧前额叶
+  ACC: anterior cingulate|\bACC\b|前扣带回
+  Insula: \binsula\b|insular cortex|脑岛|岛叶
+  OFC: orbitofrontal|\bOFC\b|眶额叶|眶额皮层
+  Striatum: striatum|caudate|putamen|纹状体|尾状核|壳核
+
+highlight_target: TPJ
+
+heatmap_symptoms:
+  Social: social.?network|social.?relationship|social.?support|social.?connect|social.?isolation|interpersonal|peer.?influence
+  Craving: craving|urge
+  Relapse: relapse|reinstatement
+  Impulsivity: impulsiv|inhibitory control
+  Reward: reward|reinforc
+
+heatmap_targets:
+  TPJ: temporo.?parietal junction|\bTPJ\b
+  DLPFC: dorsolateral prefrontal|\bDLPFC\b
+  vmPFC: ventromedial prefrontal|\bvmPFC\b
+  ACC: anterior cingulate|\bACC\b
+  Insula: \binsula\b|insular cortex
+  OFC: orbitofrontal|\bOFC\b
+  Striatum: striatum|caudate|putamen
+
+gap_patterns:
+  tpj: temporo.?parietal junction|\bTPJ\b
+  tpj_cn: 颞顶联合|颞顶交界|\bTPJ\b
+  social: social.?network|social.?relationship|social.?support|social.?connect|social.?isolation|interpersonal|peer.?influence
+  social_cn: 社交网络|社交关系|社会支持|社会隔离|人际
+  tms_cn: 经颅磁|TMS|rTMS|tDCS|经颅直流|经颅电|神经调控|脑刺激|磁刺激|电刺激|DBS|深部脑|theta.?burst|TBS|超声刺激|TUS|ECT|电休克
+  ofc: temporo.?parietal junction|\bTPJ\b
+  neg: social.?network|social.?relationship|social.?support|social.?connect|social.?isolation|interpersonal
+
+gap_combinations:
+  PubMed_OFC_Neg:
+  - tpj
+  - social
+  NIH_OFC:
+  - tpj
+  NIH_Neg:
+  - social
+  NIH_OFC_Neg:
+  - tpj
+  - social
+  NSFC_OFC_TMS:
+  - tpj_cn
+  - tms_cn
+
+key_papers: []
+panel_e_title: E  TPJ + Social + Addiction 关键文献
+panel_e_summary: (待填充)
+
+panel_a_title: A  成瘾研究总量趋势
+panel_b_title: B  研究方向构成演变 (NSFC vs NIH)
+panel_d_title: D  干预靶区分布 (PubMed NIBS+Addiction)
+
+highlight_annotation: TPJ — 社交认知核心节点，成瘾NIBS研究空白
+
+burden_query: addiction AND (social network OR social relationship OR social support)

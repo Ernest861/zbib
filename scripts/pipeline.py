@@ -1,0 +1,835 @@
+"""Pipeline — 全流程编排: 抓取 → 合并 → 分类 → 空白分析 → 出图"""
+
+import json
+import re
+import shutil
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from scripts.config import TopicConfig, ProjectLayout, load_config, NIBS_QUERY_EN, NIBS_PATTERN_CN, NIBS_PATTERN_EN
+from scripts.fetch import PubMedClient, NIHClient
+from scripts.journals import build_journal_query, tag_top_journals
+from scripts.fetch_letpub import LetPubClient
+from scripts.fetch_kd import NSFCKDClient
+from scripts.fetch_intramural import IntramuralClient
+from scripts.transform import merge_nsfc_sources, create_search_text
+from scripts.analyze import (
+    TextClassifier, AspectClassifier, GapAnalyzer,
+    NSFC_NEURO_CATEGORIES, NIH_NEURO_CATEGORIES,
+)
+from scripts.plot import LandscapePlot
+from scripts.performance import PerformanceAnalyzer
+from scripts.quality import QualityReporter
+from scripts.analyze import TrendDetector
+
+
+class Pipeline:
+    """YAML驱动的文献空白分析全流程"""
+
+    def __init__(self, config: TopicConfig, config_path: Path | None = None):
+        self.cfg = config
+        self._config_path = config_path
+        self._run_log: list[str] = []  # 记录每一步调用
+        self.layout = config.layout  # None if project_dir unset
+        self._legacy_data_dir = Path(config.data_dir)  # 原始 data_dir (用于回退)
+
+        if self.layout:
+            self.layout.ensure_dirs()
+            self.data_dir = self.layout.data
+        else:
+            self.data_dir = Path(config.data_dir)
+
+        # DataFrames populated by load_data()
+        self.nsfc = None
+        self.nih_all = None
+        self.nih_nibs = None
+        self.pubmed = None
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> 'Pipeline':
+        path = Path(path).resolve()
+        return cls(load_config(path), config_path=path)
+
+    # ─── Step 1: Fetch LetPub ────────────────────
+    def fetch_letpub(self, email: str, password: str):
+        cfg = self.cfg
+        client = LetPubClient(
+            keyword=cfg.disease_cn_keyword,
+            output_dir=str(self.data_dir),
+        )
+        client.download(email=email, password=password)
+        client.merge()
+        print(f"[LetPub] done → {self.data_dir}")
+
+    # ─── Step 2: Fetch KD ────────────────────────
+    def fetch_kd(self):
+        cfg = self.cfg
+        letpub_file = self.data_dir / f"nsfcfund_{cfg.disease_cn_keyword}_all.xlsx"
+        output_file = self.data_dir / f"nsfc_kd_{cfg.name}.csv"
+        client = NSFCKDClient()
+        client.scrape(str(letpub_file), str(output_file))
+        print(f"[KD] done → {output_file}")
+
+    # ─── Step 3: Fetch PubMed ────────────────────
+    def fetch_pubmed(self):
+        cfg = self.cfg
+        client = PubMedClient()
+
+        # 高级检索式优先；否则自动拼接
+        if cfg.pubmed_query:
+            query = cfg.pubmed_query
+        else:
+            nibs_q = cfg.intervention_query_en or NIBS_QUERY_EN
+            query = f"{nibs_q} AND {cfg.disease_en_query}"
+
+        df = client.search(query)
+        out = self.data_dir / f"pubmed_nibs_{cfg.name}.csv"
+        client.save(df, str(out))
+        print(f"[PubMed] {len(df)} articles → {out}")
+
+        # 顶刊子集 (NIBS + disease + top journals)
+        if cfg.use_top_journals:
+            journal_q = build_journal_query()
+            top_query = f"({query}) AND {journal_q}"
+            df_top = client.search(top_query)
+            out_top = self.data_dir / f"pubmed_top_{cfg.name}.csv"
+            client.save(df_top, str(out_top))
+            print(f"[PubMed-Top] {len(df_top)} articles → {out_top}")
+
+    # ─── Step 3b: Fetch PubMed burden (Panel A) ──
+    def fetch_pubmed_burden(self):
+        cfg = self.cfg
+        if not cfg.burden_query:
+            print("[PubMed-Burden] 跳过: burden_query 为空")
+            return
+        client = PubMedClient()
+        df = client.search(cfg.burden_query)
+        out = self.data_dir / f"pubmed_burden_{cfg.name}.csv"
+        client.save(df, str(out))
+        print(f"[PubMed-Burden] {len(df)} articles → {out}")
+
+    # ─── Step 4: Fetch NIH ──────────────────────
+    def fetch_nih(self):
+        cfg = self.cfg
+        client = NIHClient()
+
+        # NIBS + disease
+        nibs_q = cfg.intervention_query_en or NIBS_QUERY_EN
+        query_nibs = f"{nibs_q} AND {cfg.disease_en_query}"
+        df_nibs = client.search(query_nibs)
+        out1 = self.data_dir / f"nih_nibs_{cfg.name}.csv"
+        client.save(df_nibs, str(out1))
+        print(f"[NIH-NIBS] {len(df_nibs)} projects → {out1}")
+
+        # disease only (全量)
+        df_all = client.search(cfg.disease_en_query)
+        out2 = self.data_dir / f"nih_all_{cfg.name}.csv"
+        client.save(df_all, str(out2))
+        print(f"[NIH-all] {len(df_all)} projects → {out2}")
+
+    # ─── Step 4b: Fetch NIH Publications ────────
+    def fetch_nih_pubs(self):
+        cfg = self.cfg
+        nibs_file = None
+        for ext in ['.csv.gz', '.parquet', '.csv']:
+            p = self.data_dir / f"nih_nibs_{cfg.name}{ext}"
+            if p.exists():
+                nibs_file = p
+                break
+        if not nibs_file:
+            print(f"[NIH-Pubs] 跳过: nih_nibs 不存在，请先运行 fetch_nih()")
+            return
+        df_nibs = pd.read_csv(nibs_file, low_memory=False)
+        # Convert to core_project_num: 5R01MH112189-05 → R01MH112189
+        raw_nums = df_nibs["project_num"].dropna().unique().tolist()
+        core_nums = list({re.sub(r'^\d+', '', re.sub(r'-\d+\w*$', '', n)) for n in raw_nums})
+        print(f"[NIH-Pubs] 提取 {len(core_nums)} 个项目 (从 {len(raw_nums)} 条去重) 的 publications ...")
+
+        client = NIHClient()
+        pubmed = PubMedClient()
+        link_df, full_df = client.fetch_publications_full(core_nums, pubmed)
+
+        out_link = self.data_dir / f"nih_pubs_link_{cfg.name}.csv"
+        out_full = self.data_dir / f"nih_pubs_full_{cfg.name}.csv"
+        client.save(link_df, str(out_link))
+        client.save(full_df, str(out_full))
+        print(f"[NIH-Pubs] link={len(link_df)}, full={len(full_df)}")
+
+    # ─── Step 4c: Fetch NIH Intramural Annual Reports ──
+    def fetch_intramural(self, years: list[int] | None = None):
+        cfg = self.cfg
+        # Try csv.gz first, then csv, then legacy names
+        nih_file = None
+        for name in [f"nih_{cfg.name}", f"nih_nibs_{cfg.name}"]:
+            for ext in ['.csv.gz', '.csv']:
+                p = self.data_dir / (name + ext)
+                if p.exists():
+                    nih_file = p
+                    break
+            if nih_file:
+                break
+        if not nih_file:
+            for fallback in ["nih_scz_all.csv.gz", "nih_scz_all.csv", "nih_tms_scz.csv.gz", "nih_tms_scz.csv"]:
+                p = self.data_dir / fallback
+                if p.exists():
+                    nih_file = p
+                    break
+        if not nih_file:
+            print(f"[Intramural] 跳过: 无 NIH 数据文件")
+            return
+        df_nih = pd.read_csv(nih_file, low_memory=False)
+        # Filter intramural projects by activity_code (ZIA, Z01)
+        intramural_codes = {'ZIA', 'Z01'}
+        if 'activity_code' in df_nih.columns:
+            intramural = df_nih[
+                df_nih['activity_code'].isin(intramural_codes)
+            ]['project_num'].dropna().unique().tolist()
+        else:
+            # Fallback: match ZIA/Z01 prefix in project_num
+            intramural = df_nih[
+                df_nih['project_num'].str.contains(r'Z(?:IA|01)', na=False, regex=True)
+            ]['project_num'].dropna().unique().tolist()
+        # Extract core_project_num: 1ZIAMH002652-17 → ZIAMH002652
+        import re
+        cores = list({re.sub(r'^\d+', '', re.sub(r'-\d+\w*$', '', p)) for p in intramural})
+        if not cores:
+            print("[Intramural] 无 intramural 项目，跳过")
+            return
+        print(f"[Intramural] 找到 {len(cores)} 个 intramural 项目")
+
+        client = IntramuralClient()
+        df = client.fetch(cores, years=years)
+        out = self.data_dir / f"nih_intramural_{cfg.name}.csv"
+        client.save(df, str(out))
+
+    # ─── Step 5: Merge NSFC ─────────────────────
+    def merge_nsfc(self):
+        cfg = self.cfg
+        letpub = self.data_dir / f"nsfcfund_{cfg.disease_cn_keyword}_all.xlsx"
+        kd = self.data_dir / f"nsfc_kd_{cfg.name}.csv"
+        output = self.data_dir / f"nsfc_merged_{cfg.name}.xlsx"
+        merge_nsfc_sources(str(letpub), str(kd), str(output))
+        print(f"[Merge] → {output}")
+
+    # ─── Step 6a: Load data ─────────────────────
+    def load_data(self):
+        cfg = self.cfg
+        d = self.data_dir
+
+        # Fallback: also look in legacy data_dir (for old flat layout)
+        fallback_dir = self._legacy_data_dir if self.layout else None
+
+        def _search_dirs(filename):
+            """Search data_dir first, then fallback dir.
+            For .csv candidates, try .csv.gz and .parquet variants first."""
+            variants = [filename]
+            if filename.endswith('.csv'):
+                variants.insert(0, filename + '.gz')
+                variants.insert(1, filename[:-4] + '.parquet')
+            for fn in variants:
+                for dir_ in [d] + ([fallback_dir] if fallback_dir else []):
+                    p = dir_ / fn
+                    if p.exists():
+                        return p
+            return None
+
+        def _load_tabular(*candidates):
+            for c in candidates:
+                p = _search_dirs(c)
+                if p:
+                    s = str(p)
+                    if s.endswith('.parquet'):
+                        return pd.read_parquet(p)
+                    return pd.read_csv(p, low_memory=False)  # handles .csv and .csv.gz
+            raise FileNotFoundError(f"None found: {candidates}")
+
+        def _load_excel(*candidates):
+            for c in candidates:
+                p = _search_dirs(c)
+                if p:
+                    return pd.read_excel(p)
+            raise FileNotFoundError(f"None found: {candidates}")
+
+        # NSFC (cleaned) — optional, may not exist for new projects
+        try:
+            self.nsfc = _load_excel(
+                f"nsfc_{cfg.disease_cn_filter}_clean.xlsx",
+                f"nsfc_merged_{cfg.name}.xlsx",
+            )
+            self.nsfc = create_search_text(self.nsfc, ['项目标题', '中文关键词', '申请摘要', '结题摘要'])
+        except FileNotFoundError:
+            print("[Load] NSFC 数据不存在，跳过")
+            self.nsfc = None
+
+        # NIH all
+        self.nih_all = _load_tabular(
+            f"nih_all_{cfg.name}.csv",
+            f"nih_scz_all.csv",
+        )
+        self.nih_all = create_search_text(self.nih_all, ['title', 'terms', 'abstract'])
+
+        # NIH NIBS subset
+        self.nih_nibs = _load_tabular(
+            f"nih_nibs_{cfg.name}.csv",
+            f"nih_tms_scz.csv",
+        )
+        self.nih_nibs = create_search_text(self.nih_nibs, ['title', 'terms', 'abstract'])
+
+        # PubMed
+        self.pubmed = _load_tabular(
+            f"pubmed_nibs_{cfg.name}.csv",
+            f"pubmed_tms_scz.csv",
+        )
+        self.pubmed = create_search_text(self.pubmed, ['title', 'abstract', 'mesh', 'keywords'])
+        if 'journal' in self.pubmed.columns:
+            self.pubmed = tag_top_journals(self.pubmed)
+
+        # PubMed burden (optional, for Panel A)
+        self.pubmed_burden = None
+        burden_p = _search_dirs(f"pubmed_burden_{cfg.name}.csv")
+        if burden_p:
+            self.pubmed_burden = pd.read_csv(burden_p, low_memory=False)
+
+        # PubMed top journal subset (optional, for Panel H)
+        self.pubmed_top = None
+        top_p = _search_dirs(f"pubmed_top_{cfg.name}.csv")
+        if top_p:
+            self.pubmed_top = pd.read_csv(top_p, low_memory=False)
+
+        print(f"[Load] NSFC={len(self.nsfc) if self.nsfc is not None else 'N/A'}, NIH-all={len(self.nih_all)}, "
+              f"NIH-NIBS={len(self.nih_nibs)}, PubMed={len(self.pubmed)}"
+              f"{f', Burden={len(self.pubmed_burden)}' if self.pubmed_burden is not None else ''}"
+              f"{f', Top={len(self.pubmed_top)}' if self.pubmed_top is not None else ''}")
+
+    # ─── Step 6b: Classify ──────────────────────
+    def classify(self):
+        cfg = self.cfg
+
+        # NSFC
+        if self.nsfc is not None:
+            nsfc_clf = TextClassifier(NSFC_NEURO_CATEGORIES)
+            self.nsfc['category'] = nsfc_clf.classify(self.nsfc['text'])
+            self.nsfc['cat_merged'] = TextClassifier.merge_categories(
+                self.nsfc['category'], cfg.nsfc_merge_map)
+
+        # NIH
+        nih_clf = TextClassifier(NIH_NEURO_CATEGORIES)
+        self.nih_all['category'] = nih_clf.classify(self.nih_all['text'])
+        self.nih_all['cat_merged'] = TextClassifier.merge_categories(
+            self.nih_all['category'], cfg.nih_to_zh_map)
+
+        print("[Classify] done")
+
+    # ─── Step 6c: Analyze gaps ──────────────────
+    def analyze_gaps(self) -> dict:
+        cfg = self.cfg
+
+        # Aspect counts
+        symptom_clf = AspectClassifier(cfg.symptoms)
+        target_clf = AspectClassifier(cfg.targets)
+        pubmed_targets = target_clf.count(self.pubmed['text'])
+        pubmed_symptoms = symptom_clf.count(self.pubmed['text'])
+
+        # Heatmap (may use different labels than main symptoms/targets)
+        hm_symp = AspectClassifier(cfg.heatmap_symptoms or cfg.symptoms)
+        hm_targ = AspectClassifier(cfg.heatmap_targets or cfg.targets)
+        heatmap_df = hm_symp.build_matrix(self.pubmed['text'], hm_symp, hm_targ)
+        hm_symptom_counts = hm_symp.count(self.pubmed['text'])
+        hm_target_counts = hm_targ.count(self.pubmed['text'])
+
+        # Gap counts
+        gap_analyzer = GapAnalyzer(cfg.gap_patterns)
+
+        # Compute individual gap counts via combinations + direct regex
+        gaps = {}
+        # PubMed: OFC in NIBS+disease corpus
+        ofc_pat = cfg.gap_patterns.get('ofc', '')
+        if ofc_pat:
+            gaps['PubMed_OFC_TMS'] = self.pubmed['text'].str.contains(
+                ofc_pat, flags=re.I, na=False).sum()
+        # PubMed combos
+        if 'PubMed_OFC_Neg' in cfg.gap_combinations:
+            gaps['PubMed_OFC_Neg'] = gap_analyzer.count_combinations(
+                self.pubmed['text'], {'x': cfg.gap_combinations['PubMed_OFC_Neg']})['x']
+        gaps['PubMed_total'] = len(self.pubmed)
+
+        # NIH combos
+        for combo_name in ['NIH_OFC', 'NIH_Neg', 'NIH_OFC_Neg']:
+            if combo_name in cfg.gap_combinations:
+                gaps[combo_name] = gap_analyzer.count_combinations(
+                    self.nih_nibs['text'], {'x': cfg.gap_combinations[combo_name]})['x']
+        gaps['NIH_total'] = len(self.nih_nibs)
+
+        # NSFC direct regex
+        if self.nsfc is not None:
+            if ofc_pat:
+                gaps['NSFC_OFC'] = self.nsfc['text'].str.contains(
+                    ofc_pat, flags=re.I, na=False).sum()
+            tms_cn = cfg.gap_patterns.get('tms_cn', NIBS_PATTERN_CN)
+            gaps['NSFC_TMS'] = self.nsfc['text'].str.contains(
+                tms_cn, flags=re.I, na=False).sum()
+            if 'NSFC_OFC_TMS' in cfg.gap_combinations:
+                gaps['NSFC_OFC_TMS'] = gap_analyzer.count_combinations(
+                    self.nsfc['text'], {'x': cfg.gap_combinations['NSFC_OFC_TMS']})['x']
+            neg_cn = cfg.gap_patterns.get('neg_cn', '')
+            if neg_cn:
+                gaps['NSFC_Neg'] = self.nsfc['text'].str.contains(
+                    neg_cn, flags=re.I, na=False).sum()
+            gaps['NSFC_total'] = len(self.nsfc)
+
+        # Burden yearly (Panel A)
+        burden_yearly = None
+        if self.pubmed_burden is not None and 'year' in self.pubmed_burden.columns:
+            burden_yearly = self.pubmed_burden.groupby('year').size()
+
+        # OFC yearly from pubmed (Panel B)
+        ofc_yearly = None
+        ofc_pat = cfg.gap_patterns.get('ofc', '')
+        if ofc_pat and 'year' in self.pubmed.columns:
+            ofc_mask = self.pubmed['text'].str.contains(ofc_pat, flags=re.I, na=False)
+            ofc_yearly = self.pubmed[ofc_mask].groupby('year').size()
+
+        # Top journal stats (Panel H)
+        top_journal_stats = None
+        if 'top_journal' in self.pubmed.columns:
+            top_journal_stats = self.pubmed.groupby(
+                ['year', 'top_journal']).size().unstack(fill_value=0)
+
+        print(f"[Gaps] {gaps}")
+        return {
+            'gaps': gaps,
+            'pubmed_targets': pubmed_targets,
+            'pubmed_symptoms': pubmed_symptoms,
+            'heatmap_df': heatmap_df,
+            'hm_symptom_counts': hm_symptom_counts,
+            'hm_target_counts': hm_target_counts,
+            'burden_yearly': burden_yearly,
+            'ofc_yearly': ofc_yearly,
+            'top_journal_stats': top_journal_stats,
+        }
+
+    # ─── Step 6d: Build plot data dict ──────────
+    def build_plot_data(self, analysis: dict) -> dict:
+        cfg = self.cfg
+        gaps = analysis['gaps']
+        pubmed_targets = analysis['pubmed_targets']
+        pubmed_symptoms = analysis['pubmed_symptoms']
+        heatmap_df = analysis['heatmap_df']
+
+        display_cats = cfg.display_cats
+        nsfc_yearly = self.nsfc.groupby('批准年份').size() if self.nsfc is not None else pd.Series(dtype=int)
+        nih_year_cat = self.nih_all[
+            self.nih_all['fiscal_year'].between(1990, 2025)
+        ].groupby(['fiscal_year', 'cat_merged']).size().unstack(fill_value=0)
+
+        symp_keys = list(heatmap_df.index)
+        targ_keys = list(heatmap_df.columns)
+
+        # Find highlight column index
+        hl_target = cfg.highlight_target
+        highlight_col = targ_keys.index(hl_target) if hl_target in targ_keys else -1
+
+        # Papers: convert from list[dict] to list[tuple]
+        papers = [
+            (p['year'], p['journal'], p['author'], p['desc'])
+            for p in cfg.key_papers
+        ]
+
+        # Gap table
+        gap_table = [
+            ['检索组合', 'PubMed', 'NIH', 'NSFC'],
+            [f'TMS+SCZ\n(总量)', str(gaps.get('PubMed_total', '')),
+             str(gaps.get('NIH_total', '')), str(gaps.get('NSFC_TMS', ''))],
+            [f'OFC+TMS\n+SCZ', str(gaps.get('PubMed_OFC_TMS', '')),
+             str(gaps.get('NIH_OFC', '0')), str(gaps.get('NSFC_OFC_TMS', '0'))],
+            [f'OFC+Neg.\nSymptoms', str(gaps.get('PubMed_OFC_Neg', '0')),
+             str(gaps.get('NIH_OFC_Neg', '0')), '0'],
+            [f'Negative\nSymptoms', str(pubmed_symptoms.get('Negative', '')),
+             str(gaps.get('NIH_Neg', '')), str(gaps.get('NSFC_Neg', ''))],
+        ]
+
+        period_ranges = [tuple(r) for r in cfg.period_ranges]
+
+        return {
+            'display_cats': display_cats,
+            'nih_year_cat': nih_year_cat,
+            'nsfc_yearly': nsfc_yearly,
+            'nih_total': len(self.nih_all),
+            'nsfc_total': len(self.nsfc) if self.nsfc is not None else 0,
+            'nsfc': self.nsfc if self.nsfc is not None else pd.DataFrame(columns=['批准年份', 'cat_merged']),
+            'cat_col': 'cat_merged',
+            'period_labels': cfg.period_labels,
+            'period_ranges': period_ranges,
+            'heatmap': heatmap_df.values,
+            'row_labels': symp_keys,
+            'col_labels': targ_keys,
+            'row_totals': [analysis['hm_symptom_counts'].get(k, 0) for k in symp_keys],
+            'col_totals': [analysis['hm_target_counts'].get(k, 0) for k in targ_keys],
+            'highlight_col': highlight_col,
+            'highlight_annotation': cfg.highlight_annotation,
+            'panel_a_title': cfg.panel_a_title,
+            'panel_b_title': cfg.panel_b_title,
+            'panel_c_title': f'C  症状×靶区 (PubMed TMS+SCZ, N={len(self.pubmed):,})',
+            'panel_d_title': cfg.panel_d_title,
+            'gap_table': gap_table,
+            'papers': papers,
+            'panel_e_title': cfg.panel_e_title,
+            'panel_e_summary': cfg.panel_e_summary,
+            'suptitle': cfg.suptitle or f'{cfg.title_zh}    {cfg.title_en}',
+            # New panels A/B/H
+            'burden_yearly': analysis.get('burden_yearly'),
+            'ofc_yearly': analysis.get('ofc_yearly'),
+            'top_journal_stats': analysis.get('top_journal_stats'),
+            'panel_h_title': cfg.panel_h_title or 'H  顶刊发文分布',
+            'milestones': cfg.key_papers,
+            'pubmed_df': self.pubmed,
+        }
+
+    # ─── Step 6e: Plot ──────────────────────────
+    def plot(self, data_dict: dict):
+        out_dir = self.layout.figs if self.layout else self.data_dir
+        output = str(out_dir / f"{self.cfg.name}_landscape")
+        plotter = LandscapePlot()
+        plotter.create_landscape(data_dict, output)
+
+    # ─── Phase 1: Performance Analysis ──────────
+    def analyze_performance(self) -> dict:
+        """PI/机构排名、Bradford定律、资金趋势、新兴PI"""
+        perf = PerformanceAnalyzer(self.nsfc, self.nih_all)
+        result = {
+            'top_pis': perf.top_pis(),
+            'top_institutions': perf.top_institutions(),
+            'bradford_nsfc': perf.bradford_zones('nsfc'),
+            'bradford_nih': perf.bradford_zones('nih'),
+            'funding_trends': perf.funding_trends(),
+            'emerging_pis': perf.emerging_pis(),
+        }
+        print(f"[Performance] top PIs: {len(result['top_pis'])}, "
+              f"top institutions: {len(result['top_institutions'])}, "
+              f"emerging PIs: {len(result['emerging_pis'])}")
+        return result
+
+    # ─── Phase 1: Quality Assessment ─────────────
+    def assess_quality(self) -> dict:
+        """数据完整性评估"""
+        qr = QualityReporter()
+        dfs = {}
+        if self.nsfc is not None:
+            dfs['NSFC'] = self.nsfc
+        if self.nih_all is not None:
+            dfs['NIH'] = self.nih_all
+        if self.pubmed is not None:
+            dfs['PubMed'] = self.pubmed
+
+        result = {
+            'completeness': qr.completeness_matrix(dfs),
+            'summary': qr.summary(dfs),
+        }
+        print(f"[Quality]\n{result['summary']}")
+        return result
+
+    # ─── Phase 1: Trend Detection ────────────────
+    def detect_trends(self) -> dict:
+        """趋势检测: 拐点、CAGR、上升/下降类别"""
+        td = TrendDetector()
+        result = {}
+
+        # NSFC yearly total inflections
+        if self.nsfc is not None:
+            yearly = self.nsfc.groupby('批准年份').size()
+            result['nsfc_inflections'] = td.detect_inflections(yearly)
+
+            # Per-category trends
+            nsfc_long = self.nsfc[['批准年份', 'cat_merged']].rename(
+                columns={'批准年份': 'year', 'cat_merged': 'category'})
+            result['nsfc_cagr'] = td.growth_rates(nsfc_long)
+            result['nsfc_emerging'] = td.emerging_declining(nsfc_long)
+
+        if self.nih_all is not None:
+            yearly = self.nih_all.groupby('fiscal_year').size()
+            result['nih_inflections'] = td.detect_inflections(yearly)
+
+            nih_long = self.nih_all[['fiscal_year', 'cat_merged']].rename(
+                columns={'fiscal_year': 'year', 'cat_merged': 'category'})
+            result['nih_cagr'] = td.growth_rates(nih_long)
+            result['nih_emerging'] = td.emerging_declining(nih_long)
+
+        emerging = result.get('nsfc_emerging', {}).get('emerging', [])
+        declining = result.get('nsfc_emerging', {}).get('declining', [])
+        print(f"[Trends] NSFC emerging: {[e['category'] for e in emerging]}, "
+              f"declining: {[d['category'] for d in declining]}")
+        return result
+
+    # ─── Phase 1b: Supplementary Analysis ────────
+    def analyze_supplementary(self) -> dict:
+        """生成补充数据: NIH经费、新兴关键词、机构×靶区、主题地图"""
+        from scripts.keywords import KeywordAnalyzer, STOPWORDS_EN
+        from scripts.network import ConceptNetwork
+
+        result = {}
+
+        # a) NIH funding by category
+        perf = PerformanceAnalyzer(nih_df=self.nih_all)
+        funding_all = perf.funding_trends()
+        result['nih_funding'] = funding_all[funding_all['source'] == 'NIH']
+
+        # b) Emerging keywords from PubMed
+        kw = KeywordAnalyzer()
+        emerging = kw.emerging_keywords(
+            self.pubmed, col='mesh', year_col='year',
+            recent_years=3, min_count=5, lang='en')
+        result['emerging_kw'] = emerging
+
+        # c) Institution × target matrix (NIH NIBS)
+        # For each target, check which NIH NIBS projects match
+        from scripts.analyze import AspectClassifier
+        targ_clf = AspectClassifier(self.cfg.targets)
+
+        # Get top-15 institutions by project count
+        top_inst = self.nih_nibs.groupby('org').size().nlargest(15).index
+        subset = self.nih_nibs[self.nih_nibs['org'].isin(top_inst)].copy()
+
+        # For each target, mark projects that match
+        target_names = list(self.cfg.targets.keys())
+        for tname, tpat in self.cfg.targets.items():
+            subset[tname] = subset['text'].str.contains(tpat, flags=re.I, na=False).astype(int)
+
+        # Cross-tab: institution × target
+        matrix = subset.groupby('org')[target_names].sum()
+        # Reorder by total
+        matrix['_total'] = matrix.sum(axis=1)
+        matrix = matrix.sort_values('_total', ascending=False).drop('_total', axis=1)
+        result['inst_target_matrix'] = matrix
+
+        # d) Thematic map from PubMed
+        cn = ConceptNetwork()
+        G = cn.from_keywords(self.pubmed, col='mesh', lang='en',
+                              min_freq=5, stopwords=STOPWORDS_EN)
+        thematic_df = cn.thematic_map(G)
+        result['thematic_map'] = thematic_df
+
+        print(f"[Supplementary] NIH funding: {len(result['nih_funding'])} rows, "
+              f"Emerging keywords: {len(result['emerging_kw'])}, "
+              f"Inst×Target: {matrix.shape}, Thematic: {len(thematic_df)}")
+        return result
+
+    def plot_supplementary(self, supp_data: dict):
+        """生成补充图"""
+        out_dir = self.layout.figs if self.layout else self.data_dir
+        output = str(out_dir / f"{self.cfg.name}_supplementary")
+        plotter = LandscapePlot()
+        plotter.create_supplementary_figure(
+            supp_data, output,
+            display_cats=self.cfg.display_cats,
+            highlight_target=self.cfg.highlight_target)
+
+    # ─── Manifest & Results ────────────────────
+    def _save_manifest(self):
+        """YAML副本 + manifest.json → parameters/"""
+        if not self.layout:
+            return
+        # Copy config YAML (skip if already in parameters/)
+        if self._config_path and self._config_path.exists():
+            dest = self.layout.parameters / self._config_path.name
+            if self._config_path.resolve() != dest.resolve():
+                shutil.copy2(self._config_path, dest)
+        # Write manifest
+        manifest = {
+            'created': datetime.now().isoformat(),
+            'config': self._config_path.name if self._config_path else None,
+            'project_dir': self.cfg.project_dir,
+            'name': self.cfg.name,
+        }
+        with open(self.layout.parameters / 'manifest.json', 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        # Scripts: record how to reproduce this run
+        import sys
+        config_rel = self._config_path.name if self._config_path else '?'
+        reproduce = {
+            'command': ' '.join(sys.argv),
+            'config_file': config_rel,
+            'python': sys.executable,
+            'cwd': str(Path.cwd()),
+            'created': datetime.now().isoformat(),
+            'steps_executed': self._run_log,
+            'reproduce': f'{sys.executable} run_all.py -c {config_rel} --step 6',
+        }
+        with open(self.layout.scripts_meta / 'run_info.json', 'w', encoding='utf-8') as f:
+            json.dump(reproduce, f, ensure_ascii=False, indent=2)
+        print(f"[Manifest] → {self.layout.parameters}")
+
+    def save_results(self, analysis: dict):
+        """Gap/heatmap/counts CSV → results/"""
+        if not self.layout:
+            return
+        out = self.layout.results
+        # Gap counts
+        gaps = analysis.get('gaps', {})
+        if gaps:
+            pd.DataFrame([gaps]).to_csv(out / 'gap_counts.csv', index=False)
+        # Heatmap
+        hm = analysis.get('heatmap_df')
+        if hm is not None:
+            hm.to_csv(out / 'heatmap.csv')
+        # Target/symptom counts
+        for key in ['pubmed_targets', 'pubmed_symptoms']:
+            counts = analysis.get(key)
+            if counts:
+                pd.Series(counts, name='count').to_csv(out / f'{key}.csv')
+        print(f"[Results] → {out}")
+
+    # ─── Cooccurrence integration ────────────
+    def run_cooccurrence(self):
+        """共现分析，输出到 figs/ + results/"""
+        from scripts.keywords import KeywordAnalyzer, STOPWORDS_CN, STOPWORDS_EN
+        from scripts.network import ConceptNetwork
+
+        ka = KeywordAnalyzer()
+        cn = ConceptNetwork()
+        plotter = LandscapePlot()
+        out_figs = self.layout.figs if self.layout else self.data_dir
+        out_results = self.layout.results if self.layout else self.data_dir
+
+        # Read params from config (with backward-compatible defaults)
+        cfg = self.cfg
+        window = getattr(cfg, 'cooccurrence_window', 5)
+        step = getattr(cfg, 'cooccurrence_step', 3)
+        min_freq_cn = getattr(cfg, 'cooccurrence_min_freq_cn', 2)
+        min_freq_en = getattr(cfg, 'cooccurrence_min_freq_en', 50)
+        max_year = getattr(cfg, 'cooccurrence_max_year', 2024)
+        extra_sw_cn = set(getattr(cfg, 'extra_stopwords_cn', []))
+        extra_sw_en = set(getattr(cfg, 'extra_stopwords_en', []))
+        emerging_years = getattr(cfg, 'emerging_recent_years', 3)
+
+        sw_cn = STOPWORDS_CN | extra_sw_cn
+        sw_en = STOPWORDS_EN | extra_sw_en
+
+        # NSFC temporal networks
+        if self.nsfc is not None and '中文关键词' in self.nsfc.columns:
+            nsfc_temporal = cn.temporal_networks(
+                self.nsfc, '中文关键词', '批准年份', window=window, step=step,
+                lang='cn', min_freq=min_freq_cn, stopwords=sw_cn)
+            plotter.plot_temporal_network(
+                nsfc_temporal, str(out_figs / 'NSFC_共现网络演变'),
+                title=f'NSFC 关键词共现网络演变 ({window}年窗口, 步长{step})')
+            evo_nsfc = cn.network_evolution_summary(nsfc_temporal)
+            if not evo_nsfc.empty:
+                evo_nsfc.to_csv(out_results / 'nsfc_network_evolution.csv', index=False)
+        else:
+            nsfc_temporal, evo_nsfc = [], pd.DataFrame()
+
+        # NIH temporal networks
+        if self.nih_all is not None and 'terms' in self.nih_all.columns:
+            nih_complete = self.nih_all[self.nih_all['fiscal_year'] <= max_year]
+            nih_temporal = cn.temporal_networks(
+                nih_complete, 'terms', 'fiscal_year', window=window, step=step,
+                lang='en', min_freq=min_freq_en, stopwords=sw_en)
+            plotter.plot_temporal_network(
+                nih_temporal, str(out_figs / 'NIH_cooccurrence_evolution'),
+                title=f'NIH Keyword Co-occurrence Network Evolution ({window}-year windows, step {step})')
+            evo_nih = cn.network_evolution_summary(nih_temporal)
+            if not evo_nih.empty:
+                evo_nih.to_csv(out_results / 'nih_network_evolution.csv', index=False)
+        else:
+            nih_temporal, evo_nih = [], pd.DataFrame()
+
+        # Thematic maps
+        if nsfc_temporal:
+            plotter.plot_thematic_map_temporal(
+                nsfc_temporal, str(out_figs / 'NSFC_thematic_map'),
+                title='NSFC 主题地图演变 (四象限)')
+        if nih_temporal:
+            plotter.plot_thematic_map_temporal(
+                nih_temporal, str(out_figs / 'NIH_thematic_map'),
+                title='NIH Thematic Map Evolution (Quadrant)')
+
+        # Emerging keywords
+        emerging_nsfc = pd.DataFrame()
+        if self.nsfc is not None and '中文关键词' in self.nsfc.columns:
+            emerging_nsfc = ka.emerging_keywords(
+                self.nsfc, col='中文关键词', year_col='批准年份',
+                recent_years=emerging_years, min_count=2, lang='cn')
+            if not emerging_nsfc.empty:
+                emerging_nsfc.to_csv(out_results / 'emerging_keywords_nsfc.csv', index=False)
+
+        emerging_nih = pd.DataFrame()
+        if self.nih_all is not None and 'terms' in self.nih_all.columns:
+            nih_for_emerging = self.nih_all[self.nih_all['fiscal_year'] <= max_year]
+            emerging_nih = ka.emerging_keywords(
+                nih_for_emerging, col='terms', year_col='fiscal_year',
+                recent_years=emerging_years, min_count=10, lang='en')
+            if not emerging_nih.empty:
+                emerging_nih.to_csv(out_results / 'emerging_keywords_nih.csv', index=False)
+
+        if not emerging_nsfc.empty or not emerging_nih.empty:
+            plotter.plot_emerging_keywords(
+                emerging_nsfc, emerging_nih,
+                str(out_figs / 'emerging_keywords'))
+
+        # Keyword prediction
+        nsfc_kw = ka.explode_keywords(self.nsfc, '中文关键词', year_col='批准年份', lang='cn') \
+            if self.nsfc is not None and '中文关键词' in self.nsfc.columns \
+            else pd.DataFrame(columns=['keyword', 'year'])
+        nsfc_for_pred = nsfc_kw[nsfc_kw['year'] <= max_year] if not nsfc_kw.empty else nsfc_kw
+
+        nih_fused = ka.explode_keywords(self.nih_all, 'terms', year_col='fiscal_year', lang='en') \
+            if self.nih_all is not None and 'terms' in self.nih_all.columns \
+            else pd.DataFrame(columns=['keyword', 'year'])
+        nih_for_pred = nih_fused[nih_fused['year'] <= max_year] if not nih_fused.empty else nih_fused
+
+        nsfc_top = nsfc_for_pred['keyword'].value_counts().head(30).index.tolist() if not nsfc_for_pred.empty else []
+        pred_nsfc = ka.predict_trend(nsfc_for_pred, nsfc_top, forecast_years=5, min_yearly_avg=0.5)
+        nih_top = nih_for_pred['keyword'].value_counts().head(30).index.tolist() if not nih_for_pred.empty else []
+        pred_nih = ka.predict_trend(nih_for_pred, nih_top, forecast_years=5, min_yearly_avg=5)
+
+        plotter.plot_keyword_prediction(pred_nsfc, pred_nih, str(out_figs / 'keyword_trend_prediction'))
+        plotter.plot_evolution_summary(evo_nsfc, evo_nih, str(out_figs / 'network_evolution_summary'))
+        print(f"[Cooccurrence] done → {out_figs}")
+
+    # ─── Main runner ────────────────────────────
+    def run(self, step: int | None = None, skip_fetch: bool = False,
+            email: str = '', password: str = ''):
+        """
+        step=None: 跑全部
+        step=6: 只跑分析+出图 (需要数据文件已存在)
+        skip_fetch: 跳过爬虫步骤 (1-4), 从merge开始
+        """
+        def _log(name):
+            self._run_log.append(f"{datetime.now().isoformat()} {name}")
+
+        if step is None and not skip_fetch:
+            print("═══ Step 1: LetPub ═══"); _log("fetch_letpub")
+            self.fetch_letpub(email, password)
+            print("═══ Step 2: KD ═══"); _log("fetch_kd")
+            self.fetch_kd()
+            print("═══ Step 3: PubMed ═══"); _log("fetch_pubmed")
+            self.fetch_pubmed()
+            print("═══ Step 3b: PubMed Burden ═══"); _log("fetch_pubmed_burden")
+            self.fetch_pubmed_burden()
+            print("═══ Step 4: NIH ═══"); _log("fetch_nih")
+            self.fetch_nih()
+            print("═══ Step 4b: NIH Publications ═══"); _log("fetch_nih_pubs")
+            self.fetch_nih_pubs()
+            print("═══ Step 4c: NIH Intramural Reports ═══"); _log("fetch_intramural")
+            self.fetch_intramural()
+
+        if step is None or step == 5:
+            if not skip_fetch:
+                print("═══ Step 5: Merge ═══"); _log("merge_nsfc")
+                self.merge_nsfc()
+
+        if step is None or step >= 6:
+            print("═══ Step 6: Analyze & Plot ═══"); _log("analyze_and_plot")
+            self.load_data()
+            self.classify()
+            analysis = self.analyze_gaps()
+            self.save_results(analysis)
+            data_dict = self.build_plot_data(analysis)
+            self.plot(data_dict)
+            supp_data = self.analyze_supplementary()
+            self.plot_supplementary(supp_data)
+            self._save_manifest()
+            print("═══ Done ═══")
