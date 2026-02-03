@@ -760,7 +760,7 @@ class Pipeline:
             nih_for_emerging = self.nih_all[self.nih_all['fiscal_year'] <= max_year]
             emerging_nih = ka.emerging_keywords(
                 nih_for_emerging, col='terms', year_col='fiscal_year',
-                recent_years=emerging_years, min_count=10, lang='en')
+                recent_years=emerging_years, min_count=30, lang='en')
             if not emerging_nih.empty:
                 emerging_nih.to_csv(out_results / 'emerging_keywords_nih.csv', index=False)
 
@@ -787,6 +787,38 @@ class Pipeline:
 
         plotter.plot_keyword_prediction(pred_nsfc, pred_nih, str(out_figs / 'keyword_trend_prediction'))
         plotter.plot_evolution_summary(evo_nsfc, evo_nih, str(out_figs / 'network_evolution_summary'))
+
+        # Keyword trajectory sparklines (top-20 keywords over time)
+        wg_nsfc = ka.word_growth(self.nsfc, '中文关键词', '批准年份', top_n=20, lang='cn') \
+            if self.nsfc is not None and '中文关键词' in self.nsfc.columns else None
+        wg_nih = ka.word_growth(
+            self.nih_all[self.nih_all['fiscal_year'] <= max_year] if self.nih_all is not None else pd.DataFrame(),
+            'terms', 'fiscal_year', top_n=20, lang='en') \
+            if self.nih_all is not None and 'terms' in self.nih_all.columns else None
+        plotter.plot_keyword_trajectories(
+            wg_nsfc, wg_nih, str(out_figs / 'keyword_trajectories'),
+            title='关键词生命周期轨迹 (Top-20 Keyword Trajectories)')
+
+        # Community evolution tracking
+        if nsfc_temporal:
+            plotter.plot_community_evolution(
+                nsfc_temporal, str(out_figs / 'NSFC_community_evolution'),
+                title='NSFC 社区主题演变追踪')
+        if nih_temporal:
+            plotter.plot_community_evolution(
+                nih_temporal, str(out_figs / 'NIH_community_evolution'),
+                title='NIH Community Theme Evolution')
+
+        # Combined keyword dashboard (NSFC + NIH)
+        plotter.plot_keyword_landscape(
+            emerging_nsfc, wg_nsfc, nsfc_temporal,
+            str(out_figs / 'NSFC_keyword_dashboard'),
+            title='NSFC 关键词全景仪表板')
+        plotter.plot_keyword_landscape(
+            emerging_nih, wg_nih, nih_temporal,
+            str(out_figs / 'NIH_keyword_dashboard'),
+            title='NIH Keyword Landscape Dashboard')
+
         print(f"[Cooccurrence] done → {out_figs}")
 
     # ─── Main runner ────────────────────────────

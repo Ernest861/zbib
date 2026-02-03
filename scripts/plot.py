@@ -826,6 +826,245 @@ class LandscapePlot:
         print(f"已保存: {out.with_suffix('.png')}")
         plt.close()
 
+    def plot_keyword_trajectories(self, word_growth_nsfc: 'pd.DataFrame',
+                                  word_growth_nih: 'pd.DataFrame',
+                                  output: str, title: str = '关键词生命周期轨迹'):
+        """小倍数 sparkline: 每个关键词一小格，显示年度频率曲线
+
+        word_growth: index=year, columns=keyword, values=count
+        """
+        C = self.C
+        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'PingFang SC', 'Heiti SC']
+        plt.rcParams['axes.unicode_minus'] = False
+
+        def _sparklines(fig_ax_list, wg, panel_title, max_kw=20):
+            """Draw sparklines on provided axes."""
+            if wg is None or wg.empty:
+                for ax in fig_ax_list:
+                    ax.axis('off')
+                return
+            keywords = wg.columns[:max_kw]
+            for i, ax in enumerate(fig_ax_list):
+                if i >= len(keywords):
+                    ax.axis('off')
+                    continue
+                kw = keywords[i]
+                series = wg[kw]
+                ax.fill_between(series.index, series.values, alpha=0.3, color=C['INDIGO'])
+                ax.plot(series.index, series.values, color=C['INDIGO'], lw=1.2)
+                # Mark peak
+                peak_yr = series.idxmax()
+                ax.plot(peak_yr, series[peak_yr], 'o', color=C['ACCENT'], ms=4, zorder=5)
+                ax.set_title(kw, fontsize=8, pad=2, color='#2C3E50')
+                ax.tick_params(labelsize=6)
+                ax.set_xlim(series.index.min(), series.index.max())
+                ax.spines[['top', 'right']].set_visible(False)
+
+        n_kw = 20
+        ncols = 5
+        nrows = (n_kw + ncols - 1) // ncols
+
+        fig, all_axes = plt.subplots(nrows * 2, ncols, figsize=(18, nrows * 4),
+                                      facecolor=C['BG'])
+
+        # Top half: NSFC, bottom half: NIH
+        nsfc_axes = all_axes[:nrows].flatten()
+        nih_axes = all_axes[nrows:].flatten()
+
+        _sparklines(nsfc_axes, word_growth_nsfc, 'NSFC', max_kw=n_kw)
+        _sparklines(nih_axes, word_growth_nih, 'NIH', max_kw=n_kw)
+
+        # Row labels
+        fig.text(0.02, 0.75, 'NSFC', fontsize=16, fontweight='bold', color=C['ACCENT'],
+                 rotation=90, va='center')
+        fig.text(0.02, 0.25, 'NIH', fontsize=16, fontweight='bold', color=C['INDIGO'],
+                 rotation=90, va='center')
+
+        fig.suptitle(title, fontsize=16, fontweight='bold', color='#2C3E50', y=1.01)
+        fig.tight_layout(rect=[0.03, 0, 1, 0.98])
+        from pathlib import Path
+        out = Path(output)
+        fig.savefig(str(out.with_suffix('.png')), dpi=200, bbox_inches='tight', facecolor=C['BG'])
+        fig.savefig(str(out.with_suffix('.pdf')), bbox_inches='tight', facecolor=C['BG'])
+        print(f"已保存: {out.with_suffix('.png')}")
+        plt.close()
+
+    def plot_community_evolution(self, temporal: list, output: str,
+                                 title: str = '社区主题演变追踪'):
+        """追踪主要社区标签在各时间窗口的变化 — 气泡矩阵图
+
+        x=时间窗口, y=社区标签, 气泡大小=size, 颜色=quadrant
+        """
+        C = self.C
+        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'PingFang SC', 'Heiti SC']
+        plt.rcParams['axes.unicode_minus'] = False
+
+        if not temporal:
+            return
+
+        quadrant_colors = {
+            'Motor': C['ACCENT'], 'Basic': C['INDIGO'],
+            'Niche': C['JADE'], 'Emerging/Declining': '#BBBBBB',
+        }
+
+        # Collect all (period, label, size, quadrant) tuples
+        records = []
+        for snap in temporal:
+            tm = snap.get('thematic_map')
+            if tm is None or (hasattr(tm, 'empty') and tm.empty):
+                continue
+            for _, row in tm.iterrows():
+                records.append({
+                    'period': snap['period'],
+                    'label': row['label'],
+                    'size': row['size'],
+                    'quadrant': row.get('quadrant', 'Emerging/Declining'),
+                })
+
+        if not records:
+            return
+
+        import pandas as pd
+        rdf = pd.DataFrame(records)
+        periods = list(dict.fromkeys(rdf['period']))  # preserve order
+        # Keep labels that appear in >=2 periods (interesting trajectories)
+        label_counts = rdf.groupby('label')['period'].nunique()
+        recurring = label_counts[label_counts >= 2].index.tolist()
+        # Also include top-size labels from last period
+        last_period_labels = rdf[rdf['period'] == periods[-1]].nlargest(5, 'size')['label'].tolist()
+        all_labels = list(dict.fromkeys(recurring + last_period_labels))[:20]
+
+        if not all_labels:
+            all_labels = rdf['label'].unique()[:15].tolist()
+
+        rdf = rdf[rdf['label'].isin(all_labels)]
+
+        fig, ax = plt.subplots(figsize=(max(12, len(periods) * 1.5), max(6, len(all_labels) * 0.45)),
+                                facecolor=C['BG'])
+        ax.set_facecolor(C['BG'])
+
+        period_idx = {p: i for i, p in enumerate(periods)}
+        label_idx = {l: i for i, l in enumerate(all_labels)}
+
+        max_size = rdf['size'].max()
+        for _, row in rdf.iterrows():
+            if row['label'] not in label_idx or row['period'] not in period_idx:
+                continue
+            x = period_idx[row['period']]
+            y = label_idx[row['label']]
+            s = max(row['size'] / max_size * 600, 30)
+            color = quadrant_colors.get(row['quadrant'], '#999')
+            ax.scatter(x, y, s=s, c=color, alpha=0.7, edgecolors='white', linewidth=0.5, zorder=3)
+
+        # Connect same labels across periods with lines
+        for label in all_labels:
+            sub = rdf[rdf['label'] == label].sort_values('period',
+                key=lambda s: s.map(period_idx))
+            if len(sub) >= 2:
+                xs = [period_idx[p] for p in sub['period']]
+                ys = [label_idx[label]] * len(xs)
+                ax.plot(xs, ys, '-', color='#CCCCCC', lw=0.8, zorder=1)
+
+        ax.set_xticks(range(len(periods)))
+        ax.set_xticklabels(periods, fontsize=9, rotation=30, ha='right')
+        ax.set_yticks(range(len(all_labels)))
+        ax.set_yticklabels(all_labels, fontsize=9)
+        ax.set_xlabel('Time Window', fontsize=11)
+        ax.set_title(title, fontsize=15, fontweight='bold', color='#2C3E50')
+        ax.spines[['top', 'right']].set_visible(False)
+
+        # Legend
+        from matplotlib.lines import Line2D
+        handles = [Line2D([0], [0], marker='o', color='w', markerfacecolor=v,
+                          markersize=8, label=k) for k, v in quadrant_colors.items()]
+        ax.legend(handles=handles, loc='upper left', fontsize=8, frameon=False)
+
+        fig.tight_layout()
+        from pathlib import Path
+        out = Path(output)
+        fig.savefig(str(out.with_suffix('.png')), dpi=200, bbox_inches='tight', facecolor=C['BG'])
+        fig.savefig(str(out.with_suffix('.pdf')), bbox_inches='tight', facecolor=C['BG'])
+        print(f"已保存: {out.with_suffix('.png')}")
+        plt.close()
+
+    def plot_keyword_landscape(self, emerging: 'pd.DataFrame',
+                                word_growth: 'pd.DataFrame',
+                                temporal: list, output: str,
+                                title: str = '关键词全景仪表板'):
+        """组合仪表板: A=Top词频率排名, B=新兴词气泡, C=社区数/模块性趋势"""
+        C = self.C
+        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'PingFang SC', 'Heiti SC']
+        plt.rcParams['axes.unicode_minus'] = False
+
+        fig = plt.figure(figsize=(20, 7), facecolor=C['BG'])
+        gs = fig.add_gridspec(1, 3, width_ratios=[1, 1.2, 1], wspace=0.3)
+
+        # Panel A: Top-15 keywords bar
+        ax_a = fig.add_subplot(gs[0])
+        ax_a.set_facecolor(C['BG'])
+        if word_growth is not None and not word_growth.empty:
+            totals = word_growth.sum().sort_values(ascending=True).tail(15)
+            colors_a = [C['ACCENT'] if kw in (emerging['keyword'].values[:5] if emerging is not None and not emerging.empty else [])
+                        else C['SLATE'] for kw in totals.index]
+            ax_a.barh(range(len(totals)), totals.values, color=colors_a, alpha=0.85)
+            ax_a.set_yticks(range(len(totals)))
+            ax_a.set_yticklabels(totals.index, fontsize=9)
+            ax_a.set_xlabel('Total frequency', fontsize=10)
+        ax_a.set_title('A  累计高频词 Top-15', fontsize=12, fontweight='bold', color='#2C3E50')
+        ax_a.spines[['top', 'right']].set_visible(False)
+
+        # Panel B: Emerging keywords lollipop (sorted by recent_count, color by new/growth)
+        ax_b = fig.add_subplot(gs[1])
+        ax_b.set_facecolor(C['BG'])
+        if emerging is not None and not emerging.empty:
+            sub = emerging.head(15).iloc[::-1].copy()  # reverse for bottom-up
+            y_pos = range(len(sub))
+            colors_b = [C['ACCENT'] if p == 0 else C['INDIGO']
+                        for p in sub['prior_count']]
+            ax_b.hlines(y_pos, 0, sub['recent_count'].values, color=colors_b, alpha=0.4, lw=2)
+            ax_b.scatter(sub['recent_count'].values, y_pos, c=colors_b, s=50, zorder=5,
+                         edgecolors='white', linewidth=0.5)
+            ax_b.set_yticks(list(y_pos))
+            ax_b.set_yticklabels(sub['keyword'], fontsize=8)
+            ax_b.set_xlabel('Recent count (近3年)', fontsize=10)
+            # Annotate growth
+            for i, (_, row) in enumerate(sub.iterrows()):
+                label = '★NEW' if row['prior_count'] == 0 else f"↑{row['growth']:.0f}x"
+                ax_b.text(row['recent_count'] + 0.3, i, label, va='center', fontsize=6.5,
+                          color=C['ACCENT'] if row['prior_count'] == 0 else C['INDIGO'])
+            from matplotlib.patches import Patch
+            ax_b.legend(handles=[Patch(fc=C['ACCENT'], label='全新词'),
+                                  Patch(fc=C['INDIGO'], label='增长词')],
+                        fontsize=7, frameon=False, loc='lower right')
+        ax_b.set_title('B  新兴关键词 (近3年)', fontsize=12, fontweight='bold', color='#2C3E50')
+        ax_b.spines[['top', 'right']].set_visible(False)
+
+        # Panel C: Network complexity trend (nodes, edges, modularity over time)
+        ax_c = fig.add_subplot(gs[2])
+        ax_c.set_facecolor(C['BG'])
+        if temporal:
+            periods_lbl = [s['period'] for s in temporal]
+            n_nodes = [s['n_nodes'] for s in temporal]
+            n_edges = [s['n_edges'] for s in temporal]
+            x_pos = range(len(periods_lbl))
+            ax_c.bar(x_pos, n_nodes, color=C['JADE'], alpha=0.6, label='Nodes')
+            ax_c.bar(x_pos, n_edges, color=C['INDIGO'], alpha=0.4, label='Edges', bottom=n_nodes)
+            ax_c.set_xticks(x_pos)
+            ax_c.set_xticklabels(periods_lbl, fontsize=7, rotation=35, ha='right')
+            ax_c.set_ylabel('Count', fontsize=10)
+            ax_c.legend(fontsize=8, frameon=False)
+        ax_c.set_title('C  网络复杂度演变', fontsize=12, fontweight='bold', color='#2C3E50')
+        ax_c.spines[['top', 'right']].set_visible(False)
+
+        fig.suptitle(title, fontsize=16, fontweight='bold', color='#2C3E50', y=1.02)
+        fig.tight_layout()
+        from pathlib import Path
+        out = Path(output)
+        fig.savefig(str(out.with_suffix('.png')), dpi=200, bbox_inches='tight', facecolor=C['BG'])
+        fig.savefig(str(out.with_suffix('.pdf')), bbox_inches='tight', facecolor=C['BG'])
+        print(f"已保存: {out.with_suffix('.png')}")
+        plt.close()
+
     def plot_evolution_summary(self, evo_nsfc: 'pd.DataFrame', evo_nih: 'pd.DataFrame',
                                output: str):
         """网络演变摘要: 双行 heatmap (节点/边/模块性变化)"""
