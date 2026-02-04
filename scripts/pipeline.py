@@ -9,17 +9,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from scripts.config import TopicConfig, ProjectLayout, load_config, NIBS_QUERY_EN, NIBS_PATTERN_CN, NIBS_PATTERN_EN
+from scripts.config import TopicConfig, ProjectLayout, load_config, ApplicantConfig, NIBS_QUERY_EN, NIBS_PATTERN_CN, NIBS_PATTERN_EN
 from scripts.fetch import PubMedClient, NIHClient
 from scripts.journals import build_journal_query, tag_top_journals
 from scripts.fetch_letpub import LetPubClient
 from scripts.fetch_kd import NSFCKDClient
 from scripts.fetch_intramural import IntramuralClient
+from scripts.fetch_applicant import ApplicantClient, load_applicant_pubs
 from scripts.transform import merge_nsfc_sources, create_search_text
 from scripts.analyze import (
     TextClassifier, AspectClassifier, GapAnalyzer,
     NSFC_NEURO_CATEGORIES, NIH_NEURO_CATEGORIES,
 )
+from scripts.analyze_applicant import ApplicantAnalyzer, ApplicantProfile, create_profile_summary
 from scripts.plot import LandscapePlot
 from scripts.performance import PerformanceAnalyzer
 from scripts.quality import QualityReporter
@@ -47,6 +49,9 @@ class Pipeline:
         self.nih_all = None
         self.nih_nibs = None
         self.pubmed = None
+
+        # Applicant profile populated by analyze_applicant()
+        self.applicant_profile: ApplicantProfile | None = None
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> 'Pipeline':
@@ -110,6 +115,48 @@ class Pipeline:
         out = self.data_dir / f"pubmed_burden_{cfg.name}.csv"
         client.save(df, str(out))
         print(f"[PubMed-Burden] {len(df)} articles → {out}")
+
+    # ─── Step 3c: Fetch Applicant publications ──
+    def fetch_applicant(self):
+        """检索申请人文献 (全部 → 疾病相关 → NIBS相关)"""
+        cfg = self.cfg
+        applicant_cfg = cfg.applicant
+
+        # 解析 applicant 配置
+        if applicant_cfg is None:
+            print("[Applicant] 跳过: 未配置 applicant")
+            return
+        if isinstance(applicant_cfg, dict):
+            applicant_cfg = ApplicantConfig.from_dict(applicant_cfg)
+
+        if not applicant_cfg.name_en:
+            print("[Applicant] 跳过: name_en 为空")
+            return
+
+        client = ApplicantClient()
+
+        # 构建疾病和NIBS正则 (用于本地过滤)
+        # 从 gap_patterns 获取，或使用 disease_en_query 作为简单正则
+        disease_pattern = cfg.disease_en_query  # 简化：直接用检索式作为正则
+        nibs_pattern = cfg.intervention_pattern_en or NIBS_PATTERN_EN
+
+        # 也保留API检索式 (如果需要更精确的结果)
+        disease_query = cfg.disease_en_query
+        nibs_query = cfg.intervention_query_en or NIBS_QUERY_EN
+
+        result = client.search(
+            config=applicant_cfg,
+            disease_query=disease_query,
+            nibs_query=nibs_query,
+            disease_pattern=disease_pattern,
+            nibs_pattern=nibs_pattern,
+            use_local_filter=True,  # 使用本地过滤更快
+        )
+
+        client.save(result, self.data_dir)
+        print(f"[Applicant] {applicant_cfg.name_cn}: 全部={result.n_total}, "
+              f"疾病={result.n_disease}, NIBS={result.n_nibs}, "
+              f"疾病+NIBS={result.n_disease_nibs}")
 
     # ─── Step 4: Fetch NIH ──────────────────────
     def fetch_nih(self):
@@ -411,6 +458,98 @@ class Pipeline:
             'top_journal_stats': top_journal_stats,
         }
 
+    # ─── Step 6c-2: Analyze Applicant ───────────
+    def analyze_applicant(self) -> ApplicantProfile | None:
+        """
+        分析申请人前期工作基础，生成 ApplicantProfile.
+
+        包含完整的错误处理以确保管道不会因申请人分析失败而中断。
+        """
+        cfg = self.cfg
+        applicant_cfg = cfg.applicant
+
+        if applicant_cfg is None:
+            print("[Applicant] 跳过分析: 未配置 applicant")
+            return None
+        if isinstance(applicant_cfg, dict):
+            try:
+                applicant_cfg = ApplicantConfig.from_dict(applicant_cfg)
+            except Exception as e:
+                print(f"[Applicant] 配置解析失败: {e}")
+                return None
+
+        if not applicant_cfg.name_en:
+            print("[Applicant] 跳过分析: name_en 为空")
+            return None
+
+        try:
+            # 加载申请人文献数据
+            pubs = load_applicant_pubs(self.data_dir, applicant_cfg.name_en)
+            df_all = pubs.get('all', pd.DataFrame())
+            df_disease = pubs.get('disease', pd.DataFrame())
+            df_nibs = pubs.get('nibs', pd.DataFrame())
+            df_disease_nibs = pubs.get('disease_nibs', pd.DataFrame())
+
+            if df_all.empty:
+                print(f"[Applicant] 跳过分析: 未找到 {applicant_cfg.name_en} 的文献数据")
+                print(f"  提示: 请先运行 fetch_applicant() 获取数据")
+                return None
+
+            # 创建分析器 (传入别名用于更精确的作者匹配)
+            analyzer = ApplicantAnalyzer(
+                symptoms=cfg.symptoms,
+                targets=cfg.targets,
+                aliases=applicant_cfg.aliases,
+            )
+
+            profile = analyzer.analyze(
+                name_cn=applicant_cfg.name_cn,
+                name_en=applicant_cfg.name_en,
+                df_all=df_all,
+                df_disease=df_disease,
+                df_nibs=df_nibs,
+            )
+
+            # 更新 disease_nibs 交集数（如果本地有更准确的数据）
+            if not df_disease_nibs.empty:
+                profile.n_disease_nibs = len(df_disease_nibs)
+
+            self.applicant_profile = profile
+
+            # 打印摘要
+            print(f"[Applicant] {profile.name_cn}: 总={profile.n_total}, "
+                  f"疾病={profile.n_disease}, NIBS={profile.n_nibs}, "
+                  f"疾病+NIBS={profile.n_disease_nibs}")
+            print(f"  第一/通讯作者={profile.n_first_or_corresponding}, "
+                  f"H-index≈{profile.h_index_estimate}, "
+                  f"相关度={profile.relevance_score}/100")
+
+            # 新增: 显示期刊分级统计
+            tier1 = getattr(profile, 'tier1_count', 0)
+            tier2 = getattr(profile, 'tier2_count', 0)
+            if tier1 > 0 or tier2 > 0:
+                print(f"  顶刊={tier1}篇, 高质量期刊={tier2}篇")
+
+            # 新增: 显示主要合作者
+            if profile.top_collaborators:
+                top3 = ', '.join([f"{n[:15]}({c})" for n, c in profile.top_collaborators[:3]])
+                print(f"  主要合作者: {top3}")
+
+            # 保存摘要到 results/
+            if self.layout:
+                summary_path = self.layout.results / 'applicant_summary.txt'
+                with open(summary_path, 'w', encoding='utf-8') as f:
+                    f.write(create_profile_summary(profile))
+                print(f"[Applicant] 摘要 → {summary_path}")
+
+            return profile
+
+        except Exception as e:
+            print(f"[Applicant] 分析过程出错: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
     # ─── Step 6d: Build plot data dict ──────────
     def build_plot_data(self, analysis: dict) -> dict:
         cfg = self.cfg
@@ -494,6 +633,47 @@ class Pipeline:
         output = str(out_dir / f"{self.cfg.name}_landscape")
         plotter = LandscapePlot()
         plotter.create_landscape(data_dict, output)
+
+    # ─── Step 6f: Plot Applicant ─────────────────
+    def plot_applicant(self, extended: bool = True):
+        """
+        生成申请人前期基础独立图.
+
+        Args:
+            extended: 是否生成扩展版 6-panel 图 (包含合作网络和研究轨迹)
+        """
+        if self.applicant_profile is None:
+            print("[Applicant] 跳过出图: 无 applicant profile")
+            return
+
+        out_dir = self.layout.figs if self.layout else self.data_dir
+        output = str(out_dir / f"{self.cfg.name}_applicant")
+        title = self.cfg.panel_g_title or 'G  申请人前期基础'
+
+        plotter = LandscapePlot()
+
+        # 基础 4-panel 图
+        plotter.create_applicant_figure(
+            profile=self.applicant_profile,
+            output=output,
+            symptoms=self.cfg.symptoms,
+            targets=self.cfg.targets,
+            title=title,
+        )
+
+        # 扩展 6-panel 图 (包含合作网络和研究轨迹)
+        if extended:
+            output_ext = str(out_dir / f"{self.cfg.name}_applicant_extended")
+            plotter.create_applicant_extended_figure(
+                profile=self.applicant_profile,
+                output=output_ext,
+                title=title,
+            )
+
+        # 生成 Markdown 报告
+        from scripts.analyze_applicant import save_markdown_report
+        report_path = str(out_dir / f"{self.cfg.name}_applicant_report.md")
+        save_markdown_report(self.applicant_profile, report_path, topic_name=self.cfg.name)
 
     # ─── Phase 1: Performance Analysis ──────────
     def analyze_performance(self) -> dict:
@@ -819,6 +999,68 @@ class Pipeline:
             str(out_figs / 'NIH_keyword_dashboard'),
             title='NIH Keyword Landscape Dashboard')
 
+        # Keyword heatmaps (time × keyword intensity)
+        if wg_nsfc is not None and not wg_nsfc.empty:
+            plotter.plot_keyword_heatmap(
+                wg_nsfc, str(out_figs / 'NSFC_keyword_heatmap'),
+                title='NSFC 关键词热力演变', top_n=25)
+        if wg_nih is not None and not wg_nih.empty:
+            plotter.plot_keyword_heatmap(
+                wg_nih, str(out_figs / 'NIH_keyword_heatmap'),
+                title='NIH Keyword Intensity Heatmap', top_n=25)
+
+        # Cooccurrence matrices
+        if nsfc_temporal:
+            plotter.plot_cooccurrence_matrix(
+                nsfc_temporal, str(out_figs / 'NSFC_cooccurrence_matrix'),
+                title='NSFC 关键词共现强度矩阵', top_n=20)
+        if nih_temporal:
+            plotter.plot_cooccurrence_matrix(
+                nih_temporal, str(out_figs / 'NIH_cooccurrence_matrix'),
+                title='NIH Keyword Co-occurrence Matrix', top_n=20)
+
+        # Keyword flow diagrams (theme continuity)
+        if nsfc_temporal:
+            plotter.plot_keyword_flow(
+                nsfc_temporal, str(out_figs / 'NSFC_keyword_flow'),
+                title='NSFC 主题社区流动图')
+        if nih_temporal:
+            plotter.plot_keyword_flow(
+                nih_temporal, str(out_figs / 'NIH_keyword_flow'),
+                title='NIH Theme Flow Diagram')
+
+        # Research frontier detection
+        if nsfc_temporal:
+            plotter.plot_research_frontier(
+                emerging_nsfc, nsfc_temporal,
+                str(out_figs / 'NSFC_research_frontier'),
+                title='NSFC 研究前沿检测')
+        if nih_temporal:
+            plotter.plot_research_frontier(
+                emerging_nih, nih_temporal,
+                str(out_figs / 'NIH_research_frontier'),
+                title='NIH Research Frontier Detection')
+
+        # Radar comparison (NSFC vs NIH category distribution)
+        if self.nsfc is not None and self.nih_all is not None:
+            nsfc_cats = self.nsfc['cat_merged'].value_counts().to_dict() if 'cat_merged' in self.nsfc.columns else {}
+            nih_cats = self.nih_all['cat_merged'].value_counts().to_dict() if 'cat_merged' in self.nih_all.columns else {}
+            if nsfc_cats and nih_cats:
+                plotter.plot_radar_comparison(
+                    nsfc_cats, nih_cats,
+                    str(out_figs / 'NSFC_NIH_radar_comparison'),
+                    title='中美研究方向对比雷达图')
+
+        # Wordcloud evolution
+        if wg_nsfc is not None and not wg_nsfc.empty:
+            plotter.plot_wordcloud_evolution(
+                wg_nsfc, str(out_figs / 'NSFC_wordcloud_evolution'),
+                n_periods=4, title='NSFC 词云演变')
+        if wg_nih is not None and not wg_nih.empty:
+            plotter.plot_wordcloud_evolution(
+                wg_nih, str(out_figs / 'NIH_wordcloud_evolution'),
+                n_periods=4, title='NIH Wordcloud Evolution')
+
         print(f"[Cooccurrence] done → {out_figs}")
 
     # ─── Main runner ────────────────────────────
@@ -841,6 +1083,8 @@ class Pipeline:
             self.fetch_pubmed()
             print("═══ Step 3b: PubMed Burden ═══"); _log("fetch_pubmed_burden")
             self.fetch_pubmed_burden()
+            print("═══ Step 3c: Applicant ═══"); _log("fetch_applicant")
+            self.fetch_applicant()
             print("═══ Step 4: NIH ═══"); _log("fetch_nih")
             self.fetch_nih()
             print("═══ Step 4b: NIH Publications ═══"); _log("fetch_nih_pubs")
@@ -858,9 +1102,13 @@ class Pipeline:
             self.load_data()
             self.classify()
             analysis = self.analyze_gaps()
+            # Analyze applicant (if configured)
+            self.analyze_applicant()
             self.save_results(analysis)
             data_dict = self.build_plot_data(analysis)
             self.plot(data_dict)
+            # Plot applicant (if profile exists)
+            self.plot_applicant()
             supp_data = self.analyze_supplementary()
             self.plot_supplementary(supp_data)
             self._save_manifest()

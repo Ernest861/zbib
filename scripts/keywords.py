@@ -267,6 +267,19 @@ STOPWORDS_EN = {
     'limited intellectual functioning', 'intellectual functioning',
     'shareable platform', 'shareable',
     'posttranscriptional', 'post-transcriptional',
+    # 第十四轮 — 最后一批行政/DEI/人口术语
+    'community advisory panel', 'community advisory',
+    'advisory panel', 'advisory board',
+    'histories', 'history', 'historical',
+    'black group', 'black individual', 'black people', 'blacks',
+    'white group', 'white individual', 'white people', 'whites',
+    'remote assessment', 'remote evaluation', 'remote monitoring',
+    'stressful experience', 'stressful experiences',
+    'novel pharmaco-therapeutic', 'new pharmacological therapeutic',
+    'pharmaco-therapeutic', 'pharmacological therapeutic',
+    'prolonged abstinence', 'sustained abstinence',
+    'hypertensive disorder', 'hypertension',
+    'machine learning based algorithm', 'machine learning algorithm',
 }
 
 

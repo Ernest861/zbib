@@ -118,6 +118,35 @@ def prompt_top_journals() -> bool:
     return choice == 'y'
 
 
+def prompt_applicant() -> dict | None:
+    """→ 申请人配置字典或None (跳过)"""
+    print("\n7. 申请人前期基础（可选）")
+    print("   用于检索申请人在该领域的前期工作，论证标书'可行性'")
+    skip = input("   跳过？[Y/n]: ").strip().lower()
+    if skip != 'n':
+        return None
+
+    name_cn = input("   中文姓名: ").strip()
+    name_en = input("   英文姓名 (PubMed检索): ").strip()
+    if not name_en:
+        print("   ⚠ 英文姓名为空，跳过申请人检索")
+        return None
+
+    affiliation = input("   机构 (过滤同名, 可选): ").strip()
+    orcid = input("   ORCID (精准检索, 可选): ").strip()
+
+    aliases_raw = input("   姓名变体 (逗号分隔, 可选): ").strip()
+    aliases = [a.strip() for a in aliases_raw.split(',') if a.strip()] if aliases_raw else []
+
+    return {
+        'name_cn': name_cn,
+        'name_en': name_en,
+        'affiliation': affiliation,
+        'orcid': orcid,
+        'aliases': aliases,
+    }
+
+
 # ─── YAML 生成 ──────────────────────────────────
 
 def _abbrev(s: str, max_len: int = 10) -> str:
@@ -204,6 +233,12 @@ def generate_yaml(inputs: dict, yaml_path: Path):
         'panel_e_summary': '(待填充)',
     }
 
+    # 申请人配置 (可选)
+    applicant = inputs.get('applicant')
+    if applicant:
+        cfg['applicant'] = applicant
+        cfg['panel_g_title'] = f"G  申请人前期基础 ({applicant.get('name_cn', '')})"
+
     yaml_path.parent.mkdir(parents=True, exist_ok=True)
     with open(yaml_path, 'w', encoding='utf-8') as f:
         yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
@@ -246,6 +281,11 @@ def load_input_yaml(path: Path) -> dict:
         symptom_cn=symptom.get('cn', ''),
         use_top_journals=raw.get('use_top_journals', False),
     )
+
+    # 申请人配置 (可选)
+    applicant = raw.get('applicant', None)
+    if applicant:
+        inputs['applicant'] = applicant
 
     letpub = raw.get('letpub', {})
     email = letpub.get('email', '') or None
@@ -328,6 +368,9 @@ def main():
         print(f"  靶点: {inputs['target_name']} ({inputs['target_en']})")
         print(f"  症状: {inputs['symptom_name']} ({inputs['symptom_en']})")
         print(f"  干预: {inputs['iv_query'][:60]}...")
+        applicant = inputs.get('applicant')
+        if applicant:
+            print(f"  申请人: {applicant.get('name_cn', '')} ({applicant.get('name_en', '')})")
         print(f"  LetPub: {'有账号' if email else '跳过'}")
         run_pipeline(inputs, email, password)
     else:
@@ -338,6 +381,7 @@ def main():
         target_name, target_en, target_cn = prompt_target()
         symptom_name, symptom_en, symptom_cn = prompt_symptom()
         use_top = prompt_top_journals()
+        applicant = prompt_applicant()
 
         inputs = dict(
             cn_keyword=cn_kw, cn_filter=cn_filter, en_query=en_query,
@@ -346,6 +390,8 @@ def main():
             symptom_name=symptom_name, symptom_en=symptom_en, symptom_cn=symptom_cn,
             use_top_journals=use_top,
         )
+        if applicant:
+            inputs['applicant'] = applicant
 
         print("\n─── 确认 ───")
         print(f"  疾病: {cn_kw} / {en_query}")
@@ -353,6 +399,10 @@ def main():
         print(f"  症状: {symptom_name} ({symptom_en} | {symptom_cn})")
         print(f"  干预: {iv_query[:60]}...")
         print(f"  顶刊筛选: {'是' if use_top else '否'}")
+        if applicant:
+            print(f"  申请人: {applicant.get('name_cn', '')} ({applicant.get('name_en', '')})")
+        else:
+            print(f"  申请人: 跳过")
         ok = input("\n确认并开始？[Y/n]: ").strip().lower()
         if ok and ok != 'y':
             print("已取消。")

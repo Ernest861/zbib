@@ -15,6 +15,32 @@ NIBS_PATTERN_EN = r'transcranial magnetic|\bTMS\b|\brTMS\b|\btDCS\b|transcranial
 NIBS_QUERY_EN = '(TMS OR rTMS OR tDCS OR "brain stimulation" OR TUS OR DBS OR "theta burst")'
 
 
+# ═══════════════════════════════════════════════
+# 申请人配置
+# ═══════════════════════════════════════════════
+@dataclass
+class ApplicantConfig:
+    """申请人信息配置，用于检索前期工作基础"""
+    name_cn: str                                   # 中文姓名（显示用）
+    name_en: str                                   # 英文姓名（PubMed检索）
+    affiliation: str = ''                          # 机构（过滤同名）
+    orcid: str = ''                                # ORCID（精准检索）
+    keywords: list[str] = field(default_factory=list)   # 研究关键词
+    aliases: list[str] = field(default_factory=list)    # 姓名变体 (e.g., ["M Wang", "Wang M"])
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'ApplicantConfig':
+        """从字典构造，支持YAML解析"""
+        return cls(
+            name_cn=d.get('name_cn', ''),
+            name_en=d.get('name_en', ''),
+            affiliation=d.get('affiliation', ''),
+            orcid=d.get('orcid', ''),
+            keywords=d.get('keywords', []),
+            aliases=d.get('aliases', []),
+        )
+
+
 @dataclass
 class ProjectLayout:
     """标准化项目文件夹: parameters/ data/ results/ figs/ scripts_meta/"""
@@ -134,6 +160,9 @@ class TopicConfig:
     burden_query: str = ''           # e.g. 'schizophrenia AND negative symptoms'
     panel_h_title: str = ''          # Panel H 标题
 
+    # ── 申请人前期基础 (Panel G) ──
+    applicant: ApplicantConfig | dict | None = None   # 申请人配置
+    panel_g_title: str = ''                           # Panel G 标题
 
     @property
     def layout(self) -> ProjectLayout | None:
@@ -149,6 +178,10 @@ def load_config(path: str | Path) -> TopicConfig:
     """从YAML文件加载配置"""
     with open(path, 'r', encoding='utf-8') as f:
         raw = yaml.safe_load(f)
+
+    # 解析 applicant 字段为 ApplicantConfig
+    if 'applicant' in raw and isinstance(raw['applicant'], dict):
+        raw['applicant'] = ApplicantConfig.from_dict(raw['applicant'])
 
     # period_ranges: YAML里写 [[1999,2005],...] 直接映射
     return TopicConfig(**raw)

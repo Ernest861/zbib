@@ -8,6 +8,8 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
+from scripts.journals import TOP_JOURNAL_NAMES
+
 
 # ═══════════════════════════════════════════════
 # 预设色板
@@ -1057,6 +1059,416 @@ class LandscapePlot:
         ax_c.spines[['top', 'right']].set_visible(False)
 
         fig.suptitle(title, fontsize=16, fontweight='bold', color='#2C3E50', y=1.02)
+        fig.tight_layout()
+        from pathlib import Path
+        out = Path(output)
+        fig.savefig(str(out.with_suffix('.png')), dpi=200, bbox_inches='tight', facecolor=C['BG'])
+        fig.savefig(str(out.with_suffix('.pdf')), bbox_inches='tight', facecolor=C['BG'])
+        print(f"已保存: {out.with_suffix('.png')}")
+        plt.close()
+
+    def plot_keyword_heatmap(self, word_growth: 'pd.DataFrame', output: str,
+                             title: str = '关键词热力演变', top_n: int = 25):
+        """时间 × 关键词 热力图 — 颜色深浅表示年度频率"""
+        C = self.C
+        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'PingFang SC', 'Heiti SC']
+        plt.rcParams['axes.unicode_minus'] = False
+
+        if word_growth is None or word_growth.empty:
+            return
+
+        # Keep top-N keywords by total frequency
+        totals = word_growth.sum().sort_values(ascending=False)
+        top_kw = totals.head(top_n).index.tolist()
+        data = word_growth[top_kw].T  # rows=keywords, cols=years
+
+        fig, ax = plt.subplots(figsize=(max(12, len(data.columns) * 0.5), max(8, top_n * 0.35)),
+                                facecolor=C['BG'])
+        ax.set_facecolor(C['BG'])
+
+        # Normalize by row (keyword) for better contrast
+        data_norm = data.div(data.max(axis=1) + 0.001, axis=0)
+
+        im = ax.imshow(data_norm.values, aspect='auto', cmap='YlOrRd', interpolation='nearest')
+
+        ax.set_xticks(range(len(data.columns)))
+        ax.set_xticklabels(data.columns, fontsize=8, rotation=45, ha='right')
+        ax.set_yticks(range(len(data.index)))
+        ax.set_yticklabels(data.index, fontsize=9)
+
+        # Annotate with actual counts (sparse)
+        for i in range(len(data.index)):
+            peak_j = data.iloc[i].idxmax()
+            j = list(data.columns).index(peak_j)
+            val = data.iloc[i, j]
+            if val > 0:
+                ax.text(j, i, f'{int(val)}', ha='center', va='center', fontsize=6,
+                        color='white' if data_norm.iloc[i, j] > 0.5 else 'black')
+
+        ax.set_xlabel('Year', fontsize=11)
+        ax.set_title(title, fontsize=14, fontweight='bold', color='#2C3E50')
+
+        cbar = fig.colorbar(im, ax=ax, shrink=0.6, pad=0.02)
+        cbar.set_label('Relative frequency', fontsize=9)
+
+        fig.tight_layout()
+        from pathlib import Path
+        out = Path(output)
+        fig.savefig(str(out.with_suffix('.png')), dpi=200, bbox_inches='tight', facecolor=C['BG'])
+        fig.savefig(str(out.with_suffix('.pdf')), bbox_inches='tight', facecolor=C['BG'])
+        print(f"已保存: {out.with_suffix('.png')}")
+        plt.close()
+
+    def plot_cooccurrence_matrix(self, temporal: list, output: str,
+                                  title: str = '关键词共现强度矩阵', top_n: int = 20):
+        """Top关键词之间的共现矩阵热力图 — 聚合所有时间窗口"""
+        C = self.C
+        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'PingFang SC', 'Heiti SC']
+        plt.rcParams['axes.unicode_minus'] = False
+
+        if not temporal:
+            return
+
+        import networkx as nx
+
+        # Merge all graphs
+        merged = nx.Graph()
+        for snap in temporal:
+            G = snap['graph']
+            for u, v, d in G.edges(data=True):
+                w = d.get('weight', 1)
+                if merged.has_edge(u, v):
+                    merged[u][v]['weight'] += w
+                else:
+                    merged.add_edge(u, v, weight=w)
+
+        # Top nodes by degree
+        top_nodes = sorted(merged.nodes(), key=lambda n: merged.degree(n, weight='weight'),
+                           reverse=True)[:top_n]
+        sub = merged.subgraph(top_nodes)
+
+        # Build matrix
+        import pandas as pd
+        matrix = pd.DataFrame(0.0, index=top_nodes, columns=top_nodes)
+        for u, v, d in sub.edges(data=True):
+            w = d.get('weight', 1)
+            matrix.loc[u, v] = w
+            matrix.loc[v, u] = w
+
+        fig, ax = plt.subplots(figsize=(12, 10), facecolor=C['BG'])
+        ax.set_facecolor(C['BG'])
+
+        # Mask diagonal
+        import numpy as np
+        mask = np.eye(len(top_nodes), dtype=bool)
+        matrix_masked = matrix.values.copy().astype(float)
+        matrix_masked[mask] = np.nan
+
+        im = ax.imshow(matrix_masked, cmap='Blues', aspect='auto')
+        ax.set_xticks(range(len(top_nodes)))
+        ax.set_xticklabels(top_nodes, fontsize=8, rotation=60, ha='right')
+        ax.set_yticks(range(len(top_nodes)))
+        ax.set_yticklabels(top_nodes, fontsize=8)
+        ax.set_title(title, fontsize=14, fontweight='bold', color='#2C3E50')
+
+        cbar = fig.colorbar(im, ax=ax, shrink=0.7, pad=0.02)
+        cbar.set_label('Co-occurrence weight', fontsize=9)
+
+        fig.tight_layout()
+        from pathlib import Path
+        out = Path(output)
+        fig.savefig(str(out.with_suffix('.png')), dpi=200, bbox_inches='tight', facecolor=C['BG'])
+        fig.savefig(str(out.with_suffix('.pdf')), bbox_inches='tight', facecolor=C['BG'])
+        print(f"已保存: {out.with_suffix('.png')}")
+        plt.close()
+
+    def plot_keyword_flow(self, temporal: list, output: str,
+                          title: str = '主题社区流动图'):
+        """追踪主题社区标签在相邻时间窗口间的流动 — 贝塞尔曲线连接"""
+        C = self.C
+        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'PingFang SC', 'Heiti SC']
+        plt.rcParams['axes.unicode_minus'] = False
+
+        if len(temporal) < 2:
+            return
+
+        import pandas as pd
+        import matplotlib.patches as mpatches
+        from matplotlib.path import Path as MPath
+
+        # Collect (period, label, size)
+        period_labels = []
+        for snap in temporal:
+            tm = snap.get('thematic_map')
+            if tm is None or (hasattr(tm, 'empty') and tm.empty):
+                period_labels.append([])
+                continue
+            period_labels.append([(row['label'], row['size']) for _, row in tm.iterrows()])
+
+        periods = [snap['period'] for snap in temporal]
+
+        fig, ax = plt.subplots(figsize=(max(14, len(periods) * 2.5), 9), facecolor=C['BG'])
+        ax.set_facecolor(C['BG'])
+
+        # Assign y positions
+        y_positions = []
+        max_y = 0
+        for pl in period_labels:
+            if not pl:
+                y_positions.append({})
+                continue
+            sorted_pl = sorted(pl, key=lambda x: -x[1])
+            positions = {}
+            y = 0
+            for label, size in sorted_pl:
+                positions[label] = (y, y + size)
+                y += size + 1
+            y_positions.append(positions)
+            max_y = max(max_y, y)
+
+        # Draw flows FIRST (so bars are on top)
+        for i in range(len(periods) - 1):
+            yp1, yp2 = y_positions[i], y_positions[i + 1]
+            common_labels = set(yp1.keys()) & set(yp2.keys())
+            for label in common_labels:
+                y1_0, y1_1 = yp1[label]
+                y2_0, y2_1 = yp2[label]
+                y1_mid = (y1_0 + y1_1) / 2
+                y2_mid = (y2_0 + y2_1) / 2
+                # Bezier curve ribbon
+                x1, x2 = i + 0.35, i + 1 - 0.35
+                xm = (x1 + x2) / 2
+                # Top curve
+                verts_top = [(x1, y1_1), (xm, y1_1), (xm, y2_1), (x2, y2_1)]
+                # Bottom curve (reversed)
+                verts_bot = [(x2, y2_0), (xm, y2_0), (xm, y1_0), (x1, y1_0)]
+                verts = verts_top + verts_bot + [(x1, y1_1)]
+                codes = [MPath.MOVETO, MPath.CURVE4, MPath.CURVE4, MPath.CURVE4,
+                         MPath.LINETO, MPath.CURVE4, MPath.CURVE4, MPath.CURVE4,
+                         MPath.CLOSEPOLY]
+                path = MPath(verts, codes)
+                patch = mpatches.PathPatch(path, facecolor=C['JADE'], alpha=0.4, edgecolor='none')
+                ax.add_patch(patch)
+
+        # Draw bars for each period
+        palette = [C['INDIGO'], C['VIOLET'], C['PLUM'], C['SLATE'], C['ACCENT'],
+                   C['TEAL'], C['JADE'], C['ORCHID'], C['SAGE']]
+        for i, (pl, yp) in enumerate(zip(period_labels, y_positions)):
+            for j, (label, size) in enumerate(sorted(pl, key=lambda x: -x[1])):
+                y0, y1 = yp[label]
+                color = palette[j % len(palette)]
+                ax.fill_betweenx([y0, y1], i - 0.3, i + 0.3, alpha=0.85,
+                                  color=color, edgecolor='white', linewidth=1)
+                ax.text(i, (y0 + y1) / 2, label, ha='center', va='center',
+                        fontsize=7, color='white', fontweight='bold',
+                        bbox=dict(boxstyle='round,pad=0.1', facecolor=color, alpha=0.7, edgecolor='none'))
+
+        ax.set_xticks(range(len(periods)))
+        ax.set_xticklabels(periods, fontsize=11, fontweight='bold')
+        ax.set_ylabel('Cumulative Size', fontsize=11)
+        ax.set_title(title, fontsize=15, fontweight='bold', color='#2C3E50')
+        ax.spines[['top', 'right', 'left']].set_visible(False)
+        ax.set_xlim(-0.5, len(periods) - 0.5)
+        ax.set_ylim(-1, max_y + 1)
+
+        fig.tight_layout()
+        from pathlib import Path
+        out = Path(output)
+        fig.savefig(str(out.with_suffix('.png')), dpi=200, bbox_inches='tight', facecolor=C['BG'])
+        fig.savefig(str(out.with_suffix('.pdf')), bbox_inches='tight', facecolor=C['BG'])
+        print(f"已保存: {out.with_suffix('.png')}")
+        plt.close()
+
+    def plot_radar_comparison(self, nsfc_cats: dict, nih_cats: dict, output: str,
+                               title: str = '中美研究方向对比雷达图'):
+        """中美研究方向占比对比 — 雷达图/蜘蛛图"""
+        C = self.C
+        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'PingFang SC', 'Heiti SC']
+        plt.rcParams['axes.unicode_minus'] = False
+
+        if not nsfc_cats or not nih_cats:
+            return
+
+        # Get common categories
+        all_cats = list(set(nsfc_cats.keys()) | set(nih_cats.keys()))
+        if len(all_cats) < 3:
+            return
+
+        # Normalize to percentages
+        nsfc_total = sum(nsfc_cats.values())
+        nih_total = sum(nih_cats.values())
+        nsfc_pct = [nsfc_cats.get(c, 0) / nsfc_total * 100 for c in all_cats]
+        nih_pct = [nih_cats.get(c, 0) / nih_total * 100 for c in all_cats]
+
+        # Radar setup
+        angles = np.linspace(0, 2 * np.pi, len(all_cats), endpoint=False).tolist()
+        angles += angles[:1]  # close the polygon
+        nsfc_pct += nsfc_pct[:1]
+        nih_pct += nih_pct[:1]
+
+        fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(projection='polar'),
+                                facecolor=C['BG'])
+        ax.set_facecolor(C['BG'])
+
+        ax.plot(angles, nsfc_pct, 'o-', linewidth=2, color=C['ACCENT'], label='NSFC (中国)')
+        ax.fill(angles, nsfc_pct, alpha=0.25, color=C['ACCENT'])
+        ax.plot(angles, nih_pct, 'o-', linewidth=2, color=C['INDIGO'], label='NIH (美国)')
+        ax.fill(angles, nih_pct, alpha=0.25, color=C['INDIGO'])
+
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(all_cats, fontsize=10)
+        ax.set_title(title, fontsize=15, fontweight='bold', color='#2C3E50', y=1.08)
+        ax.legend(loc='upper right', bbox_to_anchor=(1.15, 1.1), fontsize=10)
+
+        fig.tight_layout()
+        from pathlib import Path
+        out = Path(output)
+        fig.savefig(str(out.with_suffix('.png')), dpi=200, bbox_inches='tight', facecolor=C['BG'])
+        fig.savefig(str(out.with_suffix('.pdf')), bbox_inches='tight', facecolor=C['BG'])
+        print(f"已保存: {out.with_suffix('.png')}")
+        plt.close()
+
+    def plot_research_frontier(self, emerging: 'pd.DataFrame', temporal: list,
+                                output: str, title: str = '研究前沿检测'):
+        """研究前沿检测: 新兴词 + 网络中心性变化的组合分析"""
+        C = self.C
+        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'PingFang SC', 'Heiti SC']
+        plt.rcParams['axes.unicode_minus'] = False
+
+        if (emerging is None or emerging.empty) and not temporal:
+            return
+
+        fig = plt.figure(figsize=(16, 6), facecolor=C['BG'])
+        gs = fig.add_gridspec(1, 3, width_ratios=[1, 1, 1.2], wspace=0.25)
+
+        # Panel A: Emerging keywords (top-10)
+        ax_a = fig.add_subplot(gs[0])
+        ax_a.set_facecolor(C['BG'])
+        if emerging is not None and not emerging.empty:
+            sub = emerging.head(10).iloc[::-1]
+            colors = [C['ACCENT'] if p == 0 else C['INDIGO'] for p in sub['prior_count']]
+            ax_a.barh(range(len(sub)), sub['recent_count'], color=colors, alpha=0.85)
+            ax_a.set_yticks(range(len(sub)))
+            ax_a.set_yticklabels(sub['keyword'], fontsize=9)
+            ax_a.set_xlabel('Recent count', fontsize=10)
+            for i, (_, row) in enumerate(sub.iterrows()):
+                label = '★' if row['prior_count'] == 0 else f"↑{row['growth']:.0f}x"
+                ax_a.text(row['recent_count'] + 0.2, i, label, va='center', fontsize=7)
+        ax_a.set_title('A  新兴关键词 Top-10', fontsize=12, fontweight='bold', color='#2C3E50')
+        ax_a.spines[['top', 'right']].set_visible(False)
+
+        # Panel B: Network growth rate
+        ax_b = fig.add_subplot(gs[1])
+        ax_b.set_facecolor(C['BG'])
+        if temporal and len(temporal) >= 2:
+            periods = [s['period'] for s in temporal]
+            nodes = [s['n_nodes'] for s in temporal]
+            edges = [s['n_edges'] for s in temporal]
+            x = range(len(periods))
+            ax_b.bar(x, nodes, color=C['JADE'], alpha=0.7, label='Nodes')
+            ax_b2 = ax_b.twinx()
+            ax_b2.plot(x, edges, 'o-', color=C['ACCENT'], lw=2, label='Edges')
+            ax_b.set_xticks(x)
+            ax_b.set_xticklabels(periods, fontsize=8, rotation=30, ha='right')
+            ax_b.set_ylabel('Nodes', fontsize=10, color=C['JADE'])
+            ax_b2.set_ylabel('Edges', fontsize=10, color=C['ACCENT'])
+            ax_b.legend(loc='upper left', fontsize=8)
+            ax_b2.legend(loc='upper right', fontsize=8)
+        ax_b.set_title('B  网络复杂度增长', fontsize=12, fontweight='bold', color='#2C3E50')
+        ax_b.spines[['top']].set_visible(False)
+
+        # Panel C: New vs Lost keywords per period
+        ax_c = fig.add_subplot(gs[2])
+        ax_c.set_facecolor(C['BG'])
+        if temporal and len(temporal) >= 2:
+            periods = [s['period'] for s in temporal[1:]]  # skip first (no prior)
+            new_counts = []
+            lost_counts = []
+            prev_nodes = set(temporal[0]['graph'].nodes())
+            for snap in temporal[1:]:
+                curr_nodes = set(snap['graph'].nodes())
+                new_counts.append(len(curr_nodes - prev_nodes))
+                lost_counts.append(len(prev_nodes - curr_nodes))
+                prev_nodes = curr_nodes
+            x = np.arange(len(periods))
+            width = 0.35
+            ax_c.bar(x - width/2, new_counts, width, color=C['JADE'], alpha=0.8, label='新增词')
+            ax_c.bar(x + width/2, lost_counts, width, color=C['PLUM'], alpha=0.8, label='消失词')
+            ax_c.set_xticks(x)
+            ax_c.set_xticklabels(periods, fontsize=8, rotation=30, ha='right')
+            ax_c.set_ylabel('Count', fontsize=10)
+            ax_c.legend(fontsize=8)
+        ax_c.set_title('C  关键词新陈代谢', fontsize=12, fontweight='bold', color='#2C3E50')
+        ax_c.spines[['top', 'right']].set_visible(False)
+
+        fig.suptitle(title, fontsize=15, fontweight='bold', color='#2C3E50', y=1.02)
+        fig.tight_layout()
+        from pathlib import Path
+        out = Path(output)
+        fig.savefig(str(out.with_suffix('.png')), dpi=200, bbox_inches='tight', facecolor=C['BG'])
+        fig.savefig(str(out.with_suffix('.pdf')), bbox_inches='tight', facecolor=C['BG'])
+        print(f"已保存: {out.with_suffix('.png')}")
+        plt.close()
+
+    def plot_wordcloud_evolution(self, word_growth: 'pd.DataFrame', output: str,
+                                  n_periods: int = 4, title: str = '词云演变'):
+        """分时期词云 — 词频决定大小"""
+        C = self.C
+        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'PingFang SC', 'Heiti SC']
+
+        if word_growth is None or word_growth.empty:
+            return
+
+        try:
+            from wordcloud import WordCloud
+        except ImportError:
+            print("[WARN] wordcloud not installed, skipping wordcloud plot")
+            return
+
+        years = word_growth.index.tolist()
+        n_years = len(years)
+        if n_years < n_periods:
+            n_periods = max(1, n_years)
+
+        # Split into periods
+        chunk_size = n_years // n_periods
+        period_data = []
+        for i in range(n_periods):
+            start_idx = i * chunk_size
+            end_idx = start_idx + chunk_size if i < n_periods - 1 else n_years
+            period_years = years[start_idx:end_idx]
+            period_df = word_growth.loc[period_years]
+            freqs = period_df.sum().to_dict()
+            label = f"{period_years[0]}-{period_years[-1]}"
+            period_data.append((label, freqs))
+
+        ncols = min(n_periods, 2)
+        nrows = (n_periods + ncols - 1) // ncols
+        fig, axes = plt.subplots(nrows, ncols, figsize=(8 * ncols, 6 * nrows), facecolor=C['BG'])
+        if n_periods == 1:
+            axes = np.array([axes])
+        axes = np.atleast_2d(axes).flatten()
+
+        for idx, (label, freqs) in enumerate(period_data):
+            ax = axes[idx]
+            ax.set_facecolor(C['BG'])
+            if not freqs or max(freqs.values()) == 0:
+                ax.text(0.5, 0.5, '数据不足', ha='center', va='center', transform=ax.transAxes)
+                ax.axis('off')
+                ax.set_title(label, fontsize=13, fontweight='bold')
+                continue
+            wc = WordCloud(width=800, height=600, background_color=C['BG'],
+                           font_path='/System/Library/Fonts/PingFang.ttc',
+                           colormap='viridis', max_words=50, min_font_size=8)
+            wc.generate_from_frequencies(freqs)
+            ax.imshow(wc, interpolation='bilinear')
+            ax.axis('off')
+            ax.set_title(label, fontsize=13, fontweight='bold', color='#2C3E50')
+
+        for idx in range(n_periods, len(axes)):
+            axes[idx].axis('off')
+
+        fig.suptitle(title, fontsize=16, fontweight='bold', color='#2C3E50', y=1.01)
         fig.tight_layout()
         from pathlib import Path
         out = Path(output)
@@ -2118,4 +2530,497 @@ class LandscapePlot:
         fig.savefig(str(out.with_suffix('.pdf')), bbox_inches='tight', facecolor=C['BG'])
         print(f"已保存: {out.with_suffix('.png')}")
         print(f"已保存: {out.with_suffix('.pdf')}")
+        plt.close()
+
+    # ═══════════════════════════════════════════════
+    # 申请人前期基础 Panel G
+    # ═══════════════════════════════════════════════
+
+    def create_applicant_panel(self, fig, gs_spec, profile, title: str = ''):
+        """
+        创建申请人前期基础 Panel (2×2 子网格).
+
+        布局:
+        ┌─────────────────┬─────────────────┐
+        │ 发文时间线       │ 维度雷达图       │
+        ├─────────────────┼─────────────────┤
+        │ 期刊分布        │ 代表性论文       │
+        └─────────────────┴─────────────────┘
+        """
+        from scripts.analyze_applicant import ApplicantProfile
+        C = self.C
+
+        gs_g = gridspec.GridSpecFromSubplotSpec(
+            2, 2, subplot_spec=gs_spec,
+            hspace=0.35, wspace=0.25)
+
+        # ─── G1: 发文时间线 ───
+        ax_g1 = fig.add_subplot(gs_g[0, 0])
+        ax_g1.set_facecolor(C['BG'])
+        self._plot_applicant_timeline(ax_g1, profile)
+
+        # ─── G2: 维度雷达图 ───
+        ax_g2 = fig.add_subplot(gs_g[0, 1], polar=True)
+        ax_g2.set_facecolor(C['BG'])
+        self._plot_applicant_radar(ax_g2, profile)
+
+        # ─── G3: 期刊分布 ───
+        ax_g3 = fig.add_subplot(gs_g[1, 0])
+        ax_g3.set_facecolor(C['BG'])
+        self._plot_applicant_journals(ax_g3, profile)
+
+        # ─── G4: 代表性论文 ───
+        ax_g4 = fig.add_subplot(gs_g[1, 1])
+        ax_g4.set_facecolor(C['BG'])
+        self._plot_applicant_papers(ax_g4, profile)
+
+        # Panel title (on first subplot)
+        if title:
+            ax_g1.set_title(title, fontsize=13, fontweight='bold', loc='left', color='#2C3E50')
+
+        return ax_g1, ax_g2, ax_g3, ax_g4
+
+    def _plot_applicant_timeline(self, ax, profile):
+        """发文时间线: 年度发文柱状图 + 累计折线"""
+        C = self.C
+
+        if profile.year_counts.empty:
+            ax.text(0.5, 0.5, '无发表数据', ha='center', va='center',
+                    fontsize=10, color='#999', transform=ax.transAxes)
+            ax.axis('off')
+            return
+
+        years = profile.year_counts.index.tolist()
+        counts = profile.year_counts.values.tolist()
+
+        # 柱状图
+        ax.bar(years, counts, color=C['INDIGO'], alpha=0.7, width=0.8, edgecolor='white')
+
+        # 累计折线 (右轴)
+        ax2 = ax.twinx()
+        cumsum = np.cumsum(counts)
+        ax2.plot(years, cumsum, 'o-', color=C['ACCENT'], linewidth=2, markersize=4)
+
+        ax.set_xlabel('Year', fontsize=9)
+        ax.set_ylabel('年发文量', fontsize=9, color=C['INDIGO'])
+        ax2.set_ylabel('累计', fontsize=9, color=C['ACCENT'])
+
+        ax.tick_params(axis='both', labelsize=8)
+        ax2.tick_params(axis='y', labelsize=8, labelcolor=C['ACCENT'])
+        ax.tick_params(axis='y', labelcolor=C['INDIGO'])
+
+        ax.spines['top'].set_visible(False)
+        ax2.spines['top'].set_visible(False)
+
+        # 标注统计信息
+        stats_text = f'N={profile.n_total}'
+        if hasattr(profile, 'recent_5yr_count') and profile.recent_5yr_count > 0:
+            stats_text += f' | 近5年={profile.recent_5yr_count}'
+        if hasattr(profile, 'h_index_estimate') and profile.h_index_estimate > 0:
+            stats_text += f' | H≈{profile.h_index_estimate}'
+        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+                fontsize=8, va='top', fontweight='bold', color='#2C3E50')
+
+    def _plot_applicant_radar(self, ax, profile):
+        """维度雷达图: 症状×靶区覆盖"""
+        C = self.C
+
+        # 合并症状和靶区覆盖
+        categories = []
+        values = []
+        for name, count in sorted(profile.symptom_coverage.items(), key=lambda x: -x[1]):
+            categories.append(f'症:{name[:6]}')
+            values.append(count)
+        for name, count in sorted(profile.target_coverage.items(), key=lambda x: -x[1]):
+            categories.append(f'靶:{name[:6]}')
+            values.append(count)
+
+        if len(categories) < 3:
+            # 雷达图需要至少3个维度，添加基础指标
+            categories.extend(['疾病相关', 'NIBS相关', '第一作者'])
+            values.extend([profile.n_disease, profile.n_nibs, profile.n_first_author])
+
+        # 截取前8个
+        if len(categories) > 8:
+            categories = categories[:8]
+            values = values[:8]
+
+        n = len(categories)
+        angles = np.linspace(0, 2 * np.pi, n, endpoint=False).tolist()
+        values = values + [values[0]]  # 闭合
+        angles = angles + [angles[0]]
+
+        # 归一化
+        max_val = max(values) if max(values) > 0 else 1
+        values_norm = [v / max_val for v in values]
+
+        ax.plot(angles, values_norm, 'o-', color=C['ACCENT'], linewidth=2, markersize=5)
+        ax.fill(angles, values_norm, color=C['ACCENT'], alpha=0.25)
+
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(categories, fontsize=8)
+        ax.set_ylim(0, 1.1)
+
+        # 显示原始数值
+        for ang, val, norm in zip(angles[:-1], values[:-1], values_norm[:-1]):
+            ax.text(ang, norm + 0.1, str(val), ha='center', va='bottom',
+                    fontsize=7, fontweight='bold', color='#2C3E50')
+
+    def _plot_applicant_journals(self, ax, profile, top_n: int = 8):
+        """期刊分布: 水平柱状图"""
+        C = self.C
+
+        if not profile.journal_counts:
+            ax.text(0.5, 0.5, '无期刊数据', ha='center', va='center',
+                    fontsize=10, color='#999', transform=ax.transAxes)
+            ax.axis('off')
+            return
+
+        # 取 top_n
+        journals = list(profile.journal_counts.keys())[:top_n][::-1]
+        counts = list(profile.journal_counts.values())[:top_n][::-1]
+
+        y_pos = np.arange(len(journals))
+        colors = [C['ACCENT'] if j in TOP_JOURNAL_NAMES else C['SLATE'] for j in journals]
+
+        ax.barh(y_pos, counts, color=colors, edgecolor='white', height=0.7, alpha=0.85)
+
+        max_cnt = max(counts) if counts else 1
+        for i, (j, cnt) in enumerate(zip(journals, counts)):
+            jname = j[:20] + '..' if len(j) > 22 else j
+            ax.text(cnt + max_cnt * 0.02, i, str(cnt), va='center',
+                    fontsize=8, fontweight='bold', color='#2C3E50')
+            ax.text(-max_cnt * 0.02, i, jname, va='center', ha='right',
+                    fontsize=8, color='#2C3E50')
+
+        ax.set_yticks([])
+        ax.set_xlim(0, max_cnt * 1.15)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        ax.tick_params(axis='x', labelsize=8)
+        ax.set_xlabel('N papers', fontsize=9)
+
+        # 顶刊统计
+        if profile.top_journal_count > 0:
+            ax.text(0.98, 0.98, f'顶刊: {profile.top_journal_count}篇', transform=ax.transAxes,
+                    fontsize=8, ha='right', va='top', fontweight='bold', color=C['ACCENT'])
+
+    def _plot_applicant_papers(self, ax, profile):
+        """代表性论文列表 + 统计摘要"""
+        C = self.C
+        ax.axis('off')
+
+        if not profile.key_papers:
+            ax.text(0.5, 0.5, '无代表性论文', ha='center', va='center',
+                    fontsize=10, color='#999', transform=ax.transAxes)
+            return
+
+        y_start = 0.92
+        for i, paper in enumerate(profile.key_papers[:4]):  # 最多显示4篇，留空间给统计
+            y = y_start - i * 0.17
+
+            # 编号
+            ax.text(0.02, y, f'{i+1}.', transform=ax.transAxes, fontsize=10,
+                    fontweight='bold', color=C['ACCENT'], va='top')
+
+            # 年份+期刊
+            year = paper.get('year', '')
+            journal = paper.get('journal', '')[:18]
+            ax.text(0.08, y, f'[{year}] {journal}', transform=ax.transAxes, fontsize=8,
+                    fontweight='bold', color=C['INDIGO'], va='top')
+
+            # 标题 (截断)
+            title = paper.get('title', '')[:50]
+            if len(paper.get('title', '')) > 50:
+                title += '...'
+            ax.text(0.08, y - 0.06, title, transform=ax.transAxes, fontsize=7,
+                    color='#2C3E50', va='top')
+
+        # 统计摘要框
+        stats_lines = [
+            f"疾病相关: {profile.n_disease}篇",
+            f"NIBS相关: {profile.n_nibs}篇",
+            f"第一/通讯: {profile.n_first_or_corresponding}篇",
+        ]
+
+        # 添加合作者信息（如果有）
+        if hasattr(profile, 'top_collaborators') and profile.top_collaborators:
+            top_collab = profile.top_collaborators[0][0][:15]
+            stats_lines.append(f"主要合作: {top_collab}...")
+
+        stats_text = ' | '.join(stats_lines)
+        ax.text(0.50, 0.08, stats_text, transform=ax.transAxes, fontsize=7,
+                ha='center', va='bottom', color='#666', style='italic')
+
+        # 相关度评分
+        ax.text(0.50, 0.01, f'相关度评分: {profile.relevance_score}/100',
+                transform=ax.transAxes, fontsize=9, ha='center', va='bottom',
+                fontweight='bold', color=C['ACCENT'],
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='#FEF9E7',
+                          edgecolor=C['WARN'], linewidth=1))
+
+    def create_applicant_figure(self, profile, output: str,
+                                symptoms: dict | None = None,
+                                targets: dict | None = None,
+                                title: str = '申请人前期工作基础'):
+        """
+        创建独立的申请人前期基础图 (单独的补充图).
+
+        Parameters:
+            profile: ApplicantProfile 对象
+            output: 输出文件路径 (不含扩展名)
+            symptoms: 症状维度定义 (用于雷达图标签)
+            targets: 靶区维度定义 (用于雷达图标签)
+            title: 图表标题
+        """
+        C = self.C
+        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'PingFang SC', 'Heiti SC']
+        plt.rcParams['axes.unicode_minus'] = False
+
+        fig = plt.figure(figsize=(12, 8), facecolor=C['BG'])
+
+        # 2×2 布局
+        gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.35, wspace=0.25,
+                               left=0.08, right=0.95, top=0.90, bottom=0.08)
+
+        # ─── Panel 1: 发文时间线 ───
+        ax1 = fig.add_subplot(gs[0, 0])
+        ax1.set_facecolor(C['BG'])
+        self._plot_applicant_timeline(ax1, profile)
+        ax1.set_title('发文时间线', fontsize=13, fontweight='bold', loc='left', color='#2C3E50')
+
+        # ─── Panel 2: 维度雷达图 ───
+        ax2 = fig.add_subplot(gs[0, 1], polar=True)
+        ax2.set_facecolor(C['BG'])
+        self._plot_applicant_radar(ax2, profile)
+        ax2.set_title('维度覆盖', fontsize=13, fontweight='bold', loc='left', color='#2C3E50',
+                      pad=15)
+
+        # ─── Panel 3: 期刊分布 ───
+        ax3 = fig.add_subplot(gs[1, 0])
+        ax3.set_facecolor(C['BG'])
+        self._plot_applicant_journals(ax3, profile)
+        ax3.set_title('期刊分布', fontsize=13, fontweight='bold', loc='left', color='#2C3E50')
+
+        # ─── Panel 4: 代表性论文 ───
+        ax4 = fig.add_subplot(gs[1, 1])
+        ax4.set_facecolor(C['BG'])
+        self._plot_applicant_papers(ax4, profile)
+        ax4.set_title('代表性论文', fontsize=13, fontweight='bold', loc='left', color='#2C3E50')
+
+        # Suptitle with applicant info
+        h_index_str = f" | H-index≈{profile.h_index_estimate}" if hasattr(profile, 'h_index_estimate') and profile.h_index_estimate > 0 else ""
+        suptitle = f'{title}  {profile.name_cn} ({profile.name_en}){h_index_str}'
+        fig.suptitle(suptitle, fontsize=16, fontweight='bold', color='#2C3E50', y=0.97)
+
+        # 统计摘要
+        n_first_corr = getattr(profile, 'n_first_or_corresponding', profile.n_first_author + profile.n_corresponding)
+        n_recent = getattr(profile, 'recent_5yr_count', 0)
+        summary_parts = [
+            f'总发文: {profile.n_total}',
+            f'近5年: {n_recent}' if n_recent > 0 else '',
+            f'疾病相关: {profile.n_disease}',
+            f'NIBS相关: {profile.n_nibs}',
+            f'第一/通讯: {n_first_corr}',
+        ]
+        summary = ' | '.join([p for p in summary_parts if p])
+        fig.text(0.5, 0.01, summary, ha='center', fontsize=10, color='#666',
+                 style='italic')
+
+        # Save
+        from pathlib import Path
+        out = Path(output)
+        fig.savefig(str(out.with_suffix('.png')), dpi=300, bbox_inches='tight', facecolor=C['BG'])
+        fig.savefig(str(out.with_suffix('.pdf')), bbox_inches='tight', facecolor=C['BG'])
+        print(f"已保存: {out.with_suffix('.png')}")
+        print(f"已保存: {out.with_suffix('.pdf')}")
+        plt.close()
+
+    def _plot_collaborator_network(self, ax, profile):
+        """合作者网络可视化 (简化版散点图)"""
+        C = self.C
+        ax.set_facecolor(C['BG'])
+
+        if not profile.top_collaborators:
+            ax.text(0.5, 0.5, '无合作者数据', ha='center', va='center',
+                    fontsize=10, color='#999', transform=ax.transAxes)
+            ax.axis('off')
+            return
+
+        # 准备数据
+        collaborators = profile.top_collaborators[:12]
+        names = [c[0][:15] for c in collaborators]  # 截断长名字
+        counts = [c[1] for c in collaborators]
+
+        # 简化的网络布局: 圆形排列
+        n = len(names)
+        angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
+        x = np.cos(angles)
+        y = np.sin(angles)
+
+        # 节点大小按合作次数
+        max_count = max(counts) if counts else 1
+        sizes = [100 + 300 * (c / max_count) for c in counts]
+
+        # 绘制边 (合作关系)
+        collaborator_graph = getattr(profile, 'collaborator_graph', {})
+        for i, name_i in enumerate(names):
+            full_name_i = collaborators[i][0]
+            if full_name_i in collaborator_graph:
+                for j, name_j in enumerate(names):
+                    full_name_j = collaborators[j][0]
+                    if full_name_j in collaborator_graph.get(full_name_i, []):
+                        ax.plot([x[i], x[j]], [y[i], y[j]],
+                                color='#BDC3C7', alpha=0.4, linewidth=1, zorder=1)
+
+        # 绘制节点
+        scatter = ax.scatter(x, y, s=sizes, c=counts, cmap='Blues',
+                            edgecolor='white', linewidth=1.5, alpha=0.85, zorder=2)
+
+        # 标签
+        for i, (xi, yi, name, count) in enumerate(zip(x, y, names, counts)):
+            # 调整标签位置
+            offset = 0.15
+            label_x = xi * (1 + offset)
+            label_y = yi * (1 + offset)
+            ha = 'left' if xi >= 0 else 'right'
+            ax.text(label_x, label_y, f'{name}\n({count})', fontsize=7,
+                    ha=ha, va='center', color='#2C3E50')
+
+        # 中心标注申请人
+        ax.scatter([0], [0], s=200, c=[C['ACCENT']], edgecolor='white',
+                   linewidth=2, zorder=3, marker='*')
+        ax.text(0, 0.15, profile.name_en.split()[-1], fontsize=9, fontweight='bold',
+                ha='center', va='bottom', color=C['ACCENT'])
+
+        ax.set_xlim(-1.6, 1.6)
+        ax.set_ylim(-1.6, 1.6)
+        ax.axis('off')
+
+    def _plot_research_trajectory(self, ax, profile):
+        """研究轨迹可视化: 关键词流图"""
+        C = self.C
+        ax.set_facecolor(C['BG'])
+
+        trajectory = profile.research_trajectory
+        if not trajectory:
+            ax.text(0.5, 0.5, '无轨迹数据', ha='center', va='center',
+                    fontsize=10, color='#999', transform=ax.transAxes)
+            ax.axis('off')
+            return
+
+        periods = list(trajectory.keys())
+        n_periods = len(periods)
+
+        # 颜色渐变
+        colors = plt.cm.Blues(np.linspace(0.3, 0.8, n_periods))
+
+        y_offset = 0
+        for i, (period, keywords) in enumerate(trajectory.items()):
+            # 时期标签
+            ax.text(0.02, 0.95 - y_offset, f'◆ {period}', transform=ax.transAxes,
+                    fontsize=10, fontweight='bold', color=colors[i], va='top')
+
+            # 关键词
+            kw_text = '  →  '.join(keywords[:4])
+            ax.text(0.02, 0.95 - y_offset - 0.08, kw_text, transform=ax.transAxes,
+                    fontsize=8, color='#2C3E50', va='top', style='italic')
+
+            y_offset += 0.25
+
+        # 添加趋势箭头
+        if n_periods > 1:
+            ax.annotate('', xy=(0.95, 0.15), xytext=(0.95, 0.85),
+                        xycoords='axes fraction',
+                        arrowprops=dict(arrowstyle='->', color=C['ACCENT'],
+                                        lw=2, mutation_scale=15))
+            ax.text(0.98, 0.5, '研究演进', transform=ax.transAxes, fontsize=8,
+                    rotation=-90, va='center', ha='left', color=C['ACCENT'])
+
+        ax.axis('off')
+
+    def create_applicant_extended_figure(self, profile, output: str,
+                                         title: str = '申请人前期工作基础'):
+        """
+        创建扩展版申请人前期基础图 (6 panels).
+
+        布局 (3×2):
+        ┌─────────────────┬─────────────────┐
+        │ 发文时间线       │ 维度雷达图       │
+        ├─────────────────┼─────────────────┤
+        │ 期刊分布        │ 代表性论文       │
+        ├─────────────────┼─────────────────┤
+        │ 合作者网络      │ 研究轨迹        │
+        └─────────────────┴─────────────────┘
+        """
+        C = self.C
+        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'PingFang SC', 'Heiti SC']
+        plt.rcParams['axes.unicode_minus'] = False
+
+        fig = plt.figure(figsize=(14, 12), facecolor=C['BG'])
+
+        # 3×2 布局
+        gs = gridspec.GridSpec(3, 2, figure=fig, hspace=0.30, wspace=0.25,
+                               left=0.06, right=0.95, top=0.92, bottom=0.05)
+
+        # ─── Row 1: 发文时间线 + 维度雷达图 ───
+        ax1 = fig.add_subplot(gs[0, 0])
+        ax1.set_facecolor(C['BG'])
+        self._plot_applicant_timeline(ax1, profile)
+        ax1.set_title('A  发文时间线', fontsize=12, fontweight='bold', loc='left', color='#2C3E50')
+
+        ax2 = fig.add_subplot(gs[0, 1], polar=True)
+        ax2.set_facecolor(C['BG'])
+        self._plot_applicant_radar(ax2, profile)
+        ax2.set_title('B  维度覆盖', fontsize=12, fontweight='bold', loc='left', color='#2C3E50', pad=15)
+
+        # ─── Row 2: 期刊分布 + 代表性论文 ───
+        ax3 = fig.add_subplot(gs[1, 0])
+        ax3.set_facecolor(C['BG'])
+        self._plot_applicant_journals(ax3, profile)
+        ax3.set_title('C  期刊分布', fontsize=12, fontweight='bold', loc='left', color='#2C3E50')
+
+        ax4 = fig.add_subplot(gs[1, 1])
+        ax4.set_facecolor(C['BG'])
+        self._plot_applicant_papers(ax4, profile)
+        ax4.set_title('D  代表性论文', fontsize=12, fontweight='bold', loc='left', color='#2C3E50')
+
+        # ─── Row 3: 合作者网络 + 研究轨迹 ───
+        ax5 = fig.add_subplot(gs[2, 0])
+        self._plot_collaborator_network(ax5, profile)
+        ax5.set_title('E  合作网络', fontsize=12, fontweight='bold', loc='left', color='#2C3E50')
+
+        ax6 = fig.add_subplot(gs[2, 1])
+        ax6.set_facecolor(C['BG'])
+        self._plot_research_trajectory(ax6, profile)
+        ax6.set_title('F  研究轨迹', fontsize=12, fontweight='bold', loc='left', color='#2C3E50')
+
+        # Suptitle
+        h_str = f" | H≈{profile.h_index_estimate}" if profile.h_index_estimate > 0 else ""
+        score_str = f" | 相关度: {profile.relevance_score}/100"
+        suptitle = f'{title}  {profile.name_cn} ({profile.name_en}){h_str}{score_str}'
+        fig.suptitle(suptitle, fontsize=14, fontweight='bold', color='#2C3E50', y=0.98)
+
+        # 底部统计摘要
+        tier1 = getattr(profile, 'tier1_count', profile.top_journal_count)
+        tier2 = getattr(profile, 'tier2_count', 0)
+        summary_parts = [
+            f'总发文: {profile.n_total}',
+            f'近5年: {profile.recent_5yr_count}',
+            f'疾病相关: {profile.n_disease}',
+            f'NIBS相关: {profile.n_nibs}',
+            f'第一/通讯: {profile.n_first_or_corresponding}',
+            f'顶刊: {tier1}篇',
+        ]
+        summary = ' | '.join([p for p in summary_parts if p and '0' not in p.split(':')[-1]])
+        fig.text(0.5, 0.01, summary, ha='center', fontsize=10, color='#666', style='italic')
+
+        # Save
+        from pathlib import Path
+        out = Path(output)
+        fig.savefig(str(out.with_suffix('.png')), dpi=300, bbox_inches='tight', facecolor=C['BG'])
+        fig.savefig(str(out.with_suffix('.pdf')), bbox_inches='tight', facecolor=C['BG'])
+        print(f"已保存扩展版: {out.with_suffix('.png')}")
+        print(f"已保存扩展版: {out.with_suffix('.pdf')}")
         plt.close()
