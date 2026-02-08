@@ -5,3 +5,6 @@ tqdm>=4.64.0
 openpyxl>=3.0.0
 xlrd>=2.0.0
 pyyaml>=6.0
+# 出图与数值（避免 NumPy 2.x 与旧版 matplotlib 不兼容）
+numpy>=1.24,<2
+matplotlib>=3.6

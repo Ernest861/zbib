@@ -1,0 +1,146 @@
+# zbib 症状数据库
+# 结构: 疾病 → 症状列表 (name, en, cn)
+# 可通过 PubMed 检索自动扩充
+
+schizophrenia:
+  - name: Negative
+    en: negative symptom|anhedonia|avolition|alogia|apathy|social withdrawal
+    cn: 阴性症状|快感缺失|意志缺乏|言语贫乏|情感淡漠
+  - name: Positive
+    en: positive symptom|hallucination|delusion|paranoia|psychosis
+    cn: 阳性症状|幻觉|妄想|偏执
+  - name: Cognitive
+    en: cogniti|memory|attention|executive function|working memory
+    cn: 认知|记忆|注意|执行功能|工作记忆
+  - name: Emotion
+    en: emotion|affect|mood|anxiety|depression
+    cn: 情绪|情感|心境|焦虑|抑郁
+
+depression:
+  - name: Anhedonia
+    en: anhedonia|pleasure|reward
+    cn: 快感缺失|愉悦|奖赏
+  - name: Cognitive
+    en: cogniti|memory|attention|concentration|rumination
+    cn: 认知|记忆|注意|专注|反刍
+  - name: Sleep
+    en: sleep|insomnia|hypersomnia|circadian
+    cn: 睡眠|失眠|嗜睡|昼夜节律
+  - name: Anxiety
+    en: anxiety|anxious|worry|panic
+    cn: 焦虑|担忧|恐慌
+  - name: Suicidal
+    en: suicid|self-harm|self-injury
+    cn: 自杀|自伤|自残
+
+addiction:
+  - name: Craving
+    en: craving|urge|desire|wanting
+    cn: 渴求|冲动|欲望
+  - name: Relapse
+    en: relapse|reinstatement|recurrence
+    cn: 复吸|复发|再发
+  - name: Withdrawal
+    en: withdrawal|abstinence
+    cn: 戒断|禁欲
+  - name: Impulsivity
+    en: impulsiv|inhibit|self-control|compulsiv
+    cn: 冲动|抑制|自控|强迫
+  - name: Social
+    en: social|interpersonal|peer
+    cn: 社交|人际|同伴
+
+anxiety:
+  - name: GAD
+    en: generalized anxiety|GAD|worry|apprehension
+    cn: 广泛性焦虑|担忧
+  - name: Panic
+    en: panic|fear|phobia
+    cn: 惊恐|恐惧|恐怖
+  - name: Social
+    en: social anxiety|social phobia|interpersonal
+    cn: 社交焦虑|社交恐惧|人际
+  - name: Sleep
+    en: sleep|insomnia
+    cn: 睡眠|失眠
+
+ocd:
+  - name: Obsession
+    en: obsessi|intrusive thought|rumination
+    cn: 强迫思维|侵入性思维|反刍
+  - name: Compulsion
+    en: compulsi|ritual|repetitive behavior
+    cn: 强迫行为|仪式|重复行为
+  - name: Checking
+    en: checking|verification
+    cn: 检查|核实
+  - name: Contamination
+    en: contamination|cleaning|washing
+    cn: 污染|清洁|洗涤
+
+autism:
+  - name: Social
+    en: social|communication|interaction|language
+    cn: 社交|交流|互动|语言
+  - name: Repetitive
+    en: repetitive|stereotyp|restricted interest
+    cn: 重复|刻板|局限兴趣
+  - name: Sensory
+    en: sensory|perception|hypersensitiv
+    cn: 感觉|知觉|过敏
+
+parkinson:
+  - name: Motor
+    en: motor|tremor|bradykinesia|rigidity|gait
+    cn: 运动|震颤|运动迟缓|僵直|步态
+  - name: Cognitive
+    en: cogniti|dementia|executive
+    cn: 认知|痴呆|执行功能
+  - name: Mood
+    en: depression|anxiety|apathy
+    cn: 抑郁|焦虑|淡漠
+  - name: Sleep
+    en: sleep|REM|insomnia
+    cn: 睡眠|快动眼|失眠
+
+stroke:
+  - name: Motor
+    en: motor|hemiparesis|weakness|paralysis|spasticity
+    cn: 运动|偏瘫|无力|瘫痪|痉挛
+  - name: Aphasia
+    en: aphasia|language|speech
+    cn: 失语|语言|言语
+  - name: Cognitive
+    en: cogniti|memory|attention|neglect
+    cn: 认知|记忆|注意|忽视
+  - name: Depression
+    en: depression|post-stroke depression
+    cn: 抑郁|卒中后抑郁
+
+pain:
+  - name: Chronic
+    en: chronic pain|persistent|neuropathic
+    cn: 慢性疼痛|持续性|神经病理性
+  - name: Fibromyalgia
+    en: fibromyalgia|widespread pain
+    cn: 纤维肌痛|广泛性疼痛
+  - name: Headache
+    en: headache|migraine|tension
+    cn: 头痛|偏头痛|紧张性
+
+epilepsy:
+  - name: Seizure
+    en: seizure|convulsion|ictal
+    cn: 癫痫发作|抽搐|发作期
+  - name: Cognitive
+    en: cogniti|memory|attention
+    cn: 认知|记忆|注意
+  - name: Mood
+    en: depression|anxiety|mood
+    cn: 抑郁|焦虑|情绪
+
+# ─── 元数据 ───
+_meta:
+  version: "1.0"
+  updated: "2026-02-07"
+  note: "可通过 update_symptom_db() 从 PubMed MeSH 自动扩充"

@@ -1,9 +1,83 @@
-# zbib — YAML驱动的 NIBS 文献空白分析工具
-# zh.dmtr@gmail.com
-# 20260201
+# zbib — NIBS 文献空白分析工具
+
+**版本 2.0** — 新增申请人前期基础分析
+
+> 用于国自然标书创新性论证的文献情报学分析
 
 将 NSFC、NIH Reporter、PubMed 三库数据一站式抓取、分类、空白分析、出图。
-用一个 YAML 配置文件定义研究课题，`run_all.py` 自动编排全流程，所有产出按标准化项目文件夹组织。
+
+---
+
+## 🚀 极简模式 (推荐新用户)
+
+只需 **4 个关键词**，自动完成全部分析：
+
+```bash
+./venv/bin/python quick_start.py
+```
+
+```
+1. 疾病: 精神分裂症
+2. 靶点: OFC
+3. 症状: 阴性症状
+4. 申请人: 胡强
+   英文名: Qiang Hu
+   单位: Shanghai Mental Health Center
+```
+
+自动完成：检索 → 分类 → 空白检测 → 申请人评估 → 出图 → 生成标书材料
+
+### 已有项目直接运行
+
+```bash
+# OFC-rTMS 治疗精神分裂症阴性症状 (胡强)
+./venv/bin/python run_scz_ofc.py
+
+# 通用方式
+./venv/bin/python run_all.py -c configs/xxx.yaml --step 6
+```
+
+### 输出文件
+
+| 文件 | 说明 |
+|------|------|
+| `results/NSFC标书支撑材料.md` | **直接用于标书创新性论证** |
+| `results/{name}_report.md` | 申请人完整分析报告 |
+| `figs/*_landscape.pdf` | 主全景图 (8×6 in) |
+| `figs/*_supplementary.pdf` | 补充分析图 (8×5.5 in) |
+| `figs/*_applicant_p1.pdf` | 申请人图第1页 (8×6 in) |
+| `figs/*_applicant_p2.pdf` | 申请人图第2页 (8×4 in) |
+
+### 2.0 新增: 申请人前期基础分析
+
+- **适配度 + 胜任力** 双维度评分 (0-100)
+- **象限定位**: 明星/潜力/跨界/边缘申请人
+- **领域基准排名**: 与同领域研究者对比百分位
+- **超图合作网络**: 稳定团队检测 (Battiston 2025)
+- **研究轨迹**: 关键词随时间演变
+
+---
+
+## 三种使用方式
+
+| 方式 | 命令 | 输入 | 适用 |
+|------|------|------|------|
+| **极简** | `quick_start.py` | 4个关键词 | 快速试探 |
+| **向导** | `quick_search.py` | 交互问答 | 详细配置 |
+| **配置** | `run_all.py -c` | YAML文件 | 精细调整 |
+
+### 支持的关键词
+
+<details>
+<summary>点击展开</summary>
+
+**疾病**: 精神分裂症、抑郁症、成瘾、焦虑、强迫症、帕金森、阿尔茨海默、癫痫、中风
+
+**靶点**: OFC、DLPFC、TPJ、mPFC、ACC、M1、SMA、Insula、Cerebellum
+
+**症状**: 阴性症状、阳性症状、认知、情绪、运动、疼痛、睡眠、焦虑、抑郁、冲动、渴求
+
+</details>
 
 ---
 

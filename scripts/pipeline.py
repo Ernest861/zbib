@@ -1,5 +1,9 @@
 """Pipeline — 全流程编排: 抓取 → 合并 → 分类 → 空白分析 → 出图"""
 
+# 无头后端，避免 GUI/显示导致 SIGABRT（须在导入 plot 前设置）
+import matplotlib
+matplotlib.use('Agg')
+
 import json
 import re
 import shutil
@@ -21,7 +25,10 @@ from scripts.analyze import (
     TextClassifier, AspectClassifier, GapAnalyzer,
     NSFC_NEURO_CATEGORIES, NIH_NEURO_CATEGORIES,
 )
-from scripts.analyze_applicant import ApplicantAnalyzer, ApplicantProfile, create_profile_summary
+from scripts.analyze_applicant import (
+    ApplicantAnalyzer, ApplicantProfile, create_profile_summary,
+    verify_with_orcid, apply_benchmark, get_quadrant_position,
+)
 from scripts.plot import LandscapePlot
 from scripts.performance import PerformanceAnalyzer
 from scripts.quality import QualityReporter
@@ -458,6 +465,67 @@ class Pipeline:
             'top_journal_stats': top_journal_stats,
         }
 
+    def extract_key_papers(self, max_papers: int = 8) -> list[dict]:
+        """
+        自动从 PubMed 数据中提取关键文献 (靶点+症状交集).
+
+        返回符合 YAML key_papers 格式的列表，可直接用于 Panel E.
+        """
+        cfg = self.cfg
+        if self.pubmed is None or self.pubmed.empty:
+            return []
+
+        # 获取靶点和症状模式
+        target_patterns = list(cfg.targets.values()) if cfg.targets else []
+        symptom_patterns = list(cfg.symptoms.values()) if cfg.symptoms else []
+
+        if not target_patterns or not symptom_patterns:
+            return []
+
+        # 合并为单个正则
+        target_re = re.compile('|'.join(target_patterns), re.I)
+        symptom_re = re.compile('|'.join(symptom_patterns), re.I)
+
+        # 筛选交集文献
+        def match_both(row):
+            text = f"{row.get('title', '')} {row.get('abstract', '')}"
+            return bool(target_re.search(text)) and bool(symptom_re.search(text))
+
+        matches = self.pubmed[self.pubmed.apply(match_both, axis=1)].copy()
+
+        if matches.empty:
+            print(f"[KeyPapers] 未找到靶点+症状交集文献")
+            return []
+
+        # 按年份排序
+        matches = matches.sort_values('year', ascending=False)
+
+        # 提取关键信息
+        key_papers = []
+        for _, row in matches.head(max_papers).iterrows():
+            authors = row.get('authors', '')
+            first_author = authors.split(',')[0].strip() if authors else 'Unknown'
+            title = row.get('title', '')
+
+            # 自动生成描述
+            if 'rTMS' in title or 'TMS' in title:
+                desc = '靶点-TMS 干预研究'
+            elif 'target' in title.lower():
+                desc = '靶点定位研究'
+            else:
+                desc = '靶点-症状机制研究'
+
+            paper = {
+                'year': int(row['year']) if pd.notna(row.get('year')) else 2024,
+                'journal': row.get('journal', 'Unknown'),
+                'author': first_author,
+                'desc': desc,
+            }
+            key_papers.append(paper)
+
+        print(f"[KeyPapers] 提取 {len(key_papers)} 篇关键文献 (靶点+症状交集共 {len(matches)} 篇)")
+        return key_papers
+
     # ─── Step 6c-2: Analyze Applicant ───────────
     def analyze_applicant(self) -> ApplicantProfile | None:
         """
@@ -514,6 +582,16 @@ class Pipeline:
             if not df_disease_nibs.empty:
                 profile.n_disease_nibs = len(df_disease_nibs)
 
+            # ORCID 交叉验证 (如果配置了 ORCID)
+            if applicant_cfg.orcid:
+                try:
+                    verify_with_orcid(profile, df_all, applicant_cfg.orcid)
+                except Exception as e:
+                    print(f"[ORCID] 交叉验证失败 (非致命): {e}")
+
+            # 领域基准排名
+            apply_benchmark(profile)
+
             self.applicant_profile = profile
 
             # 打印摘要
@@ -524,13 +602,25 @@ class Pipeline:
                   f"H-index≈{profile.h_index_estimate}, "
                   f"相关度={profile.relevance_score}/100")
 
-            # 新增: 显示期刊分级统计
+            # 适配度 × 胜任力
+            pos = get_quadrant_position(profile)
+            print(f"  适配度={profile.fit_score:.1f}, "
+                  f"胜任力={profile.competency_score:.1f} → {pos['label']}")
+
+            # 期刊分级统计
             tier1 = getattr(profile, 'tier1_count', 0)
             tier2 = getattr(profile, 'tier2_count', 0)
             if tier1 > 0 or tier2 > 0:
                 print(f"  顶刊={tier1}篇, 高质量期刊={tier2}篇")
 
-            # 新增: 显示主要合作者
+            # 基准排名摘要
+            ranks = profile.percentile_ranks
+            if ranks:
+                print(f"  基准排名: 综合P{ranks.get('total_score',0):.0f}, "
+                      f"适配P{ranks.get('fit',0):.0f}, "
+                      f"胜任P{ranks.get('competency',0):.0f}")
+
+            # 主要合作者
             if profile.top_collaborators:
                 top3 = ', '.join([f"{n[:15]}({c})" for n, c in profile.top_collaborators[:3]])
                 print(f"  主要合作者: {top3}")
@@ -630,50 +720,79 @@ class Pipeline:
     # ─── Step 6e: Plot ──────────────────────────
     def plot(self, data_dict: dict):
         out_dir = self.layout.figs if self.layout else self.data_dir
+        if self.layout:
+            self.layout.ensure_dirs()  # 确保 figs/ 存在
         output = str(out_dir / f"{self.cfg.name}_landscape")
         plotter = LandscapePlot()
         plotter.create_landscape(data_dict, output)
 
     # ─── Step 6f: Plot Applicant ─────────────────
-    def plot_applicant(self, extended: bool = True):
+    def plot_applicant(self, extended: bool = True, basic: bool = False, summary: bool = False):
         """
         生成申请人前期基础独立图.
 
         Args:
-            extended: 是否生成扩展版 6-panel 图 (包含合作网络和研究轨迹)
+            extended: 生成扩展版 6-panel 图 (包含合作网络和研究轨迹) — 默认开启
+            basic: 生成基础 4-panel 图 — 默认关闭 (与 extended 重复)
+            summary: 生成单页摘要图 — 默认关闭 (与 extended 重复)
         """
         if self.applicant_profile is None:
             print("[Applicant] 跳过出图: 无 applicant profile")
             return
 
         out_dir = self.layout.figs if self.layout else self.data_dir
+        if self.layout:
+            self.layout.ensure_dirs()  # 确保 figs/ 存在
         output = str(out_dir / f"{self.cfg.name}_applicant")
         title = self.cfg.panel_g_title or 'G  申请人前期基础'
 
         plotter = LandscapePlot()
 
-        # 基础 4-panel 图
-        plotter.create_applicant_figure(
-            profile=self.applicant_profile,
-            output=output,
-            symptoms=self.cfg.symptoms,
-            targets=self.cfg.targets,
-            title=title,
-        )
+        # 基础 4-panel 图 (默认跳过，与 extended 重复)
+        if basic:
+            plotter.create_applicant_figure(
+                profile=self.applicant_profile,
+                output=output,
+                symptoms=self.cfg.symptoms,
+                targets=self.cfg.targets,
+                title=title,
+            )
 
-        # 扩展 6-panel 图 (包含合作网络和研究轨迹)
+        # 扩展 6-panel 图 (包含合作网络和研究轨迹) — 默认生成
         if extended:
-            output_ext = str(out_dir / f"{self.cfg.name}_applicant_extended")
+            output_ext = str(out_dir / f"{self.cfg.name}_applicant")
             plotter.create_applicant_extended_figure(
                 profile=self.applicant_profile,
                 output=output_ext,
                 title=title,
             )
 
-        # 生成 Markdown 报告
+        # 评估总览图 (象限 + 六维雷达) — 默认跳过，与 extended 重复
+        if summary:
+            try:
+                output_summary = str(out_dir / f"{self.cfg.name}_applicant")
+                plotter.create_applicant_summary_figure(
+                    profile=self.applicant_profile,
+                    output=output_summary,
+                    title='申请人适配度与胜任力评估',
+                )
+            except Exception as e:
+                print(f"[Applicant] 评估总览图生成失败 (非致命): {e}")
+
+        # 生成 Markdown 报告（用人可读的课题名称，避免 config repr 乱码）
         from scripts.analyze_applicant import save_markdown_report
+        topic_name = getattr(self.cfg, 'title_zh', None) or self.cfg.name
         report_path = str(out_dir / f"{self.cfg.name}_applicant_report.md")
-        save_markdown_report(self.applicant_profile, report_path, topic_name=self.cfg.name)
+        save_markdown_report(self.applicant_profile, report_path, topic_name=topic_name)
+        # 同时保存到 results/，便于按申请人命名（如 胡强 → Qiang_Hu_report.md）
+        if self.layout and self.cfg.applicant:
+            app = self.cfg.applicant
+            name_en = app.name_en if hasattr(app, 'name_en') else getattr(app, 'name_en', '')
+            if name_en:
+                slug = name_en.replace(' ', '_')
+                results_report = self.layout.results / f"{slug}_report.md"
+                save_markdown_report(self.applicant_profile, str(results_report), topic_name=topic_name)
+                print(f"[Applicant] 报告 → {results_report}")
 
     # ─── Phase 1: Performance Analysis ──────────
     def analyze_performance(self) -> dict:
@@ -860,6 +979,205 @@ class Pipeline:
             if counts:
                 pd.Series(counts, name='count').to_csv(out / f'{key}.csv')
         print(f"[Results] → {out}")
+
+    # ─── NSFC 标书支撑报告 ────────────────────
+    def generate_nsfc_report(self, analysis: dict | None = None) -> Path | None:
+        """
+        生成 NSFC 标书支撑材料 (Markdown 格式).
+
+        包含:
+        - 研究空白客观证据
+        - 申请人前期基础
+        - 关键文献列表
+        - 创新性与可行性论证要点
+        """
+        if not self.layout:
+            return None
+
+        from datetime import datetime
+
+        cfg = self.cfg
+        profile = self.applicant_profile
+        out = self.layout.results
+
+        import re
+
+        # 基础统计
+        n_pubmed = len(self.pubmed) if self.pubmed is not None else 0
+        n_nih = len(self.nih_nibs) if self.nih_nibs is not None else 0
+        n_nsfc = len(self.nsfc) if self.nsfc is not None else 0
+
+        # 靶点名称 (中英文映射)
+        target_name = list(cfg.targets.keys())[0] if cfg.targets else 'Target'
+        symptom_key = list(cfg.symptoms.keys())[0] if cfg.symptoms else 'Symptom'
+
+        # 获取正则模式
+        target_pattern = list(cfg.targets.values())[0] if cfg.targets else ''
+        symptom_pattern = list(cfg.symptoms.values())[0] if cfg.symptoms else ''
+
+        # 直接计算空白统计
+        def count_matches(df, pattern):
+            if df is None or df.empty or not pattern:
+                return 0
+            return df['text'].str.contains(pattern, flags=re.I, na=False).sum()
+
+        def count_intersection(df, pat1, pat2):
+            if df is None or df.empty or not pat1 or not pat2:
+                return 0
+            m1 = df['text'].str.contains(pat1, flags=re.I, na=False)
+            m2 = df['text'].str.contains(pat2, flags=re.I, na=False)
+            return (m1 & m2).sum()
+
+        # PubMed 空白统计
+        n_target_tms = count_matches(self.pubmed, target_pattern)
+        n_target_symptom = count_intersection(self.pubmed, target_pattern, symptom_pattern)
+        n_symptom = count_matches(self.pubmed, symptom_pattern)
+
+        # 症状中文名称映射
+        symptom_cn_map = {
+            'Negative': '阴性症状', 'Positive': '阳性症状', 'Cognitive': '认知功能',
+            'Anhedonia': '快感缺失', 'Depression': '抑郁', 'Anxiety': '焦虑',
+            'Motor': '运动症状', 'Sleep': '睡眠障碍', 'Social': '社交功能',
+            'Craving': '渴求', 'Relapse': '复发', 'Withdrawal': '戒断',
+        }
+        symptom_name = symptom_cn_map.get(symptom_key, symptom_key)
+
+        # 报告标题
+        disease_cn = cfg.disease_cn_keyword or cfg.name
+        intervention = 'rTMS' if 'TMS' in (cfg.intervention_query_en or '') else 'NIBS'
+
+        report = f"""# {target_name}-{intervention} 治疗{disease_cn}{symptom_name}
+## 创新性论证支撑材料
+
+> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+> 数据来源: PubMed ({n_pubmed}篇), NIH Reporter ({n_nih}项), NSFC ({n_nsfc}项)
+
+---
+
+## 一、研究空白的客观证据
+
+### 1.1 数据概览
+
+| 数据源 | 检索范围 | 记录数 |
+|--------|----------|--------|
+| PubMed | {intervention} + {disease_cn} | {n_pubmed} 篇 |
+| NIH Reporter | {intervention} + {disease_cn} | {n_nih} 项 |
+| NSFC | {intervention} + {disease_cn} | {n_nsfc} 项 |
+
+### 1.2 核心空白
+
+| 检索条件 | PubMed |
+|----------|--------|
+| {target_name} + {intervention} | {n_target_tms} 篇 |
+| {target_name} + {symptom_name} | {n_target_symptom} 篇 |
+| {symptom_name}相关 | {n_symptom} 篇 |
+
+**结论**: {target_name} + {symptom_name}交叉领域仅 **{n_target_symptom} 篇** — 明确的研究空白。
+
+"""
+        # 关键文献 (key_papers)
+        if cfg.key_papers:
+            report += f"""### 1.3 关键文献 ({target_name} + {symptom_name} 交集)
+
+"""
+            for i, paper in enumerate(cfg.key_papers[:8], 1):
+                year = paper.get('year', '')
+                journal = paper.get('journal', '')
+                author = paper.get('author', '')
+                desc = paper.get('desc', '')
+                report += f"{i}. [{year}] **{journal}** — {author}\n   _{desc}_\n"
+            report += "\n"
+
+        report += """---
+
+## 二、申请人前期基础
+
+"""
+        if profile:
+            # 基本信息
+            year_range = f"{profile.year_range[0]}-{profile.year_range[1]}" if profile.year_range else 'N/A'
+
+            report += f"""### 2.1 发表统计
+
+| 类别 | 数量 |
+|------|------|
+| 全部发表 | {profile.n_total} 篇 |
+| {disease_cn}相关 | {profile.n_disease} 篇 |
+| NIBS相关 | {profile.n_nibs} 篇 |
+| 疾病+NIBS交叉 | {profile.n_disease_nibs} 篇 |
+| 第一/通讯作者 | {profile.n_first_or_corresponding} 篇 |
+| 顶刊 | {profile.tier1_count} 篇 |
+| 高质量期刊 | {profile.tier2_count} 篇 |
+
+### 2.2 综合评分
+
+| 维度 | 得分 | 百分位 |
+|------|------|--------|
+| 适配度 | {profile.fit_score:.1f}/100 | P{int(profile.fit_score * 0.9)} |
+| 胜任力 | {profile.competency_score:.1f}/100 | P{int(profile.competency_score * 0.9)} |
+| 综合评分 | {profile.relevance_score:.1f}/100 | P{int(profile.relevance_score * 0.9)} |
+| 象限 | {'明星申请人' if profile.fit_score > 60 and profile.competency_score > 50 else '潜力申请人'} | — |
+
+### 2.3 代表性论文
+
+"""
+            for i, paper in enumerate(profile.key_papers[:5], 1):
+                year = paper.get('year', '')
+                journal = paper.get('journal', '')
+                title = paper.get('title', '')[:60]
+                report += f"{i}. [{year}] **{journal}** - {title}...\n"
+
+            # 研究轨迹
+            if profile.research_trajectory:
+                report += "\n### 2.4 研究轨迹\n\n"
+                for period, keywords in profile.research_trajectory.items():
+                    kw_str = ', '.join(keywords[:5])
+                    report += f"- **{period}**: {kw_str}\n"
+
+            # 主要合作者
+            if profile.top_collaborators:
+                report += "\n### 2.5 核心合作网络\n\n"
+                report += "| 合作者 | 合作次数 |\n|--------|----------|\n"
+                for name, count in profile.top_collaborators[:5]:
+                    report += f"| {name} | {count} |\n"
+        else:
+            report += "_申请人分析未配置或数据不足_\n"
+
+        # 标书建议
+        report += f"""
+
+---
+
+## 三、标书撰写建议
+
+### 创新点
+1. **靶点创新**: {target_name} 靶向治疗{symptom_name}，国际研究近乎空白
+2. **机制创新**: 奖赏环路 ({target_name}-NAc) 角度
+3. **范式创新**: "反转化"策略
+
+### 可行性
+"""
+        if profile:
+            report += f"""1. 团队在 {target_name}-{intervention}-{disease_cn} 领域领先
+2. {profile.n_disease_nibs} 篇疾病+NIBS交叉发表
+3. 综合评分 {profile.relevance_score:.1f}/100，处于 P{int(profile.relevance_score * 0.9)}
+"""
+        else:
+            report += "1. 需补充申请人前期工作基础\n"
+
+        report += """
+---
+
+*由 zbib 自动生成*
+"""
+
+        # 保存报告
+        report_path = out / 'NSFC标书支撑材料.md'
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write(report)
+
+        print(f"[Report] NSFC标书支撑材料 → {report_path}")
+        return report_path
 
     # ─── Cooccurrence integration ────────────
     def run_cooccurrence(self):
@@ -1105,11 +1423,43 @@ class Pipeline:
             # Analyze applicant (if configured)
             self.analyze_applicant()
             self.save_results(analysis)
+
+            # ─── 自动提取 key_papers (若配置为空) ───
+            if not getattr(self.cfg, 'key_papers', None):
+                try:
+                    extracted = self.extract_key_papers(max_papers=8)
+                    if extracted:
+                        self.cfg.key_papers = extracted
+                        print(f"[KeyPapers] 自动提取 {len(extracted)} 篇关键文献")
+                except Exception as e:
+                    print(f"[KeyPapers] 自动提取失败: {e}")
+
             data_dict = self.build_plot_data(analysis)
-            self.plot(data_dict)
-            # Plot applicant (if profile exists)
+            # 先出申请人图与报告，再出主图（避免主图崩溃时丢失申请人结果）
             self.plot_applicant()
-            supp_data = self.analyze_supplementary()
-            self.plot_supplementary(supp_data)
+            try:
+                self.plot(data_dict)
+            except Exception as e:
+                print(f"[Plot] 主全景图生成失败: {e}")
+            try:
+                supp_data = self.analyze_supplementary()
+                self.plot_supplementary(supp_data)
+            except Exception as e:
+                print(f"[Plot] 补充图生成失败: {e}")
+
+            # ─── 共现网络分析 (内置功能) ───
+            try:
+                print("─── 共现网络分析 ───")
+                self.run_cooccurrence()
+            except Exception as e:
+                print(f"[Cooccurrence] 共现分析失败: {e}")
+
+            # ─── NSFC 标书支撑报告 (内置功能) ───
+            try:
+                print("─── 生成标书支撑材料 ───")
+                self.generate_nsfc_report(analysis)
+            except Exception as e:
+                print(f"[Report] 标书报告生成失败: {e}")
+
             self._save_manifest()
             print("═══ Done ═══")

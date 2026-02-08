@@ -208,20 +208,27 @@ class ApplicantClient:
 
         策略:
         1. 若有 ORCID: 直接用 ORCID[auid]
-        2. 否则: (name[AU] OR aliases[AU]) AND affiliation[ad]
+        2. 否则: (name[AU] OR aliases[AU]) AND (aff1[ad] OR aff2[ad] OR ...)
         """
         if config.orcid:
             return f"{config.orcid}[auid]"
 
         # 构建作者名检索
         author_parts = [f'"{config.name_en}"[AU]']
-        for alias in config.aliases:
-            author_parts.append(f'"{alias}"[AU]')
+        for alias in (config.aliases or []):
+            if alias and alias != config.name_en:
+                author_parts.append(f'"{alias}"[AU]')
         author_clause = ' OR '.join(author_parts)
 
-        # 加机构过滤
-        if config.affiliation:
-            return f"({author_clause}) AND {config.affiliation}[ad]"
+        # 机构过滤：支持多机构 (affiliation 或 affiliations)
+        affs = getattr(config, 'affiliations', None) or []
+        if not affs and config.affiliation:
+            affs = [config.affiliation]
+        if affs:
+            ad_parts = [f'"{a}"[ad]' for a in affs if a]
+            if ad_parts:
+                ad_clause = ' OR '.join(ad_parts)
+                return f"({author_clause}) AND ({ad_clause})"
         return f"({author_clause})"
 
     def save(

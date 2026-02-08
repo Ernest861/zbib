@@ -23,18 +23,28 @@ class ApplicantConfig:
     """申请人信息配置，用于检索前期工作基础"""
     name_cn: str                                   # 中文姓名（显示用）
     name_en: str                                   # 英文姓名（PubMed检索）
-    affiliation: str = ''                          # 机构（过滤同名）
+    affiliation: str = ''                          # 单机构（向后兼容）
+    affiliations: list[str] = field(default_factory=list)  # 多机构（PubMed ad 用 OR 连接）
     orcid: str = ''                                # ORCID（精准检索）
     keywords: list[str] = field(default_factory=list)   # 研究关键词
     aliases: list[str] = field(default_factory=list)    # 姓名变体 (e.g., ["M Wang", "Wang M"])
 
     @classmethod
     def from_dict(cls, d: dict) -> 'ApplicantConfig':
-        """从字典构造，支持YAML解析"""
+        """从字典构造，支持YAML解析。affiliations 与 affiliation 合并为列表。"""
+        aff = d.get('affiliation', '')
+        affs = d.get('affiliations', [])
+        if isinstance(affs, list) and affs:
+            # 若同时有 affiliation 且不在列表中，则插入到前面
+            if aff and aff not in affs:
+                affs = [aff] + [a for a in affs if a != aff]
+        elif aff:
+            affs = [aff]
         return cls(
             name_cn=d.get('name_cn', ''),
             name_en=d.get('name_en', ''),
-            affiliation=d.get('affiliation', ''),
+            affiliation=aff,
+            affiliations=affs,
             orcid=d.get('orcid', ''),
             keywords=d.get('keywords', []),
             aliases=d.get('aliases', []),

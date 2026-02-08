@@ -1,0 +1,78 @@
+name: 精神分裂症_ofc_Negative
+title_zh: 精神分裂症 + OFC + Negative 文献空白分析
+title_en: schizophrenia Literature Gap Analysis
+disease_cn_keyword: 精神分裂症
+disease_cn_filter: 精神分裂症
+disease_en_query: schizophrenia
+project_dir: 精神分裂症_OFC_Negative_胡强_20260207
+intervention_query_en: (TMS OR rTMS OR "transcranial magnetic stimulation" OR "theta
+  burst")
+intervention_pattern_cn: 经颅磁|TMS|rTMS|磁刺激|theta.?burst|TBS
+intervention_pattern_en: transcranial magnetic|\bTMS\b|\brTMS\b|theta.?burst|\bTBS\b
+symptoms:
+  Negative: negative symptom|anhedonia|avolition|alogia|apathy|阴性症状|快感缺失|意志缺乏
+targets:
+  OFC: orbitofrontal|\bOFC\b|眶额|OFC
+highlight_target: OFC
+gap_patterns:
+  tms_cn: 经颅磁|TMS|rTMS|磁刺激|theta.?burst|TBS
+  target: orbitofrontal|\bOFC\b
+  target_cn: 眶额|OFC
+  symptom: negative symptom|anhedonia|avolition|alogia|apathy
+  symptom_cn: 阴性症状|快感缺失|意志缺乏
+gap_combinations:
+  PubMed_Target_Symptom:
+  - target
+  - symptom
+  NIH_Target_Symptom:
+  - target
+  - symptom
+  NIH_Target:
+  - target
+  NSFC_Target_TMS:
+  - target_cn
+  - tms_cn
+  NIH_Symptom:
+  - symptom
+use_top_journals: true
+key_papers:
+- year: 2026
+  journal: Prog Neuropsychopharmacol Biol Psychiatry
+  author: Zhang Kexu; Jiao Xiong; Zhang Yanli; Zeng Ningning; Wang Min; Li Kun; Wang
+    Ziliang; Sun Junfeng; Wang Jijun; Hu Qiang
+  desc: OFC-TMS 干预研究
+- year: 2025
+  journal: Mol Psychiatry
+  author: Sinanaj Lorina; Pallis Konstantinos; Dehkordi Anahita Fazel; Huguelet Philippe;
+    Kaiser Stefan; Bègue Indrit
+  desc: 靶点定位研究
+- year: 2024
+  journal: JAMA Netw Open
+  author: Sabé Michel; Hyde Joshua; Cramer Catharina; Eberhard Antonia; Crippa Alessio;
+    Brunoni André Russowsky; Aleman André; Kaiser Stefan; Baldwin David S; Garner
+    Matthew; Sentissi Othman; Fiedorowicz Jess G; Brandt Valerie; Cortese Samuele;
+    Solmi Marco
+  desc: OFC-阴性症状机制
+- year: 2024
+  journal: Prog Neuropsychopharmacol Biol Psychiatry
+  author: Hu Qiang; Jiao Xiong; Wei YanYan; Tang XiaoChen; Xu LiHua; Cui HuiRu; Hu
+    YeGang; Tang YingYing; Wang ZiXuan; Chen Tao; Liu HaiChun; Li ChunBo; An CuiXia;
+    Wang JiJun; Zhang TianHong
+  desc: OFC-阴性症状机制
+- year: 2023
+  journal: Psychiatry Res
+  author: Hu Qiang; Jiao Xiong; Zhou Jie; Tang Yingying; Zhang Tianhong; Song Chuanfu;
+    Wang Junjie; Xiao Qiang; Ye Junying; Sun Junfeng; Wang Xijin; Li Chunbo; Wang
+    Jijun
+  desc: OFC-阴性症状机制
+panel_e_title: 'E  OFC + 阴性症状: 关键文献'
+panel_e_summary: 共 5 篇文献涉及 OFC 与阴性症状交集，是明确的研究空白
+applicant:
+  name_cn: 胡强
+  name_en: Qiang Hu
+  affiliation: Shanghai Mental Health Center
+  orcid: ''
+  aliases:
+  - Q Hu
+  - Hu Q
+panel_g_title: G  申请人前期基础 (胡强)
