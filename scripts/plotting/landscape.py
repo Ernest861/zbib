@@ -278,6 +278,11 @@ class LandscapePlotMixin:
         ax_corner.text(0.5, 0.3, 'N papers\n(all targets)', fontsize=int(14*s),
                        ha='center', va='center', color='#888888', style='italic')
 
+        # 尾注：说明单元格可重叠
+        ax_ch.text(0.5, -0.12, '* 单元格为交集计数，一篇文献可涉及多个维度；条形图为各维度真实总数',
+                   transform=ax_ch.transAxes, fontsize=int(10*s), color='#666666',
+                   ha='center', va='top', style='italic')
+
         return ax_ct, ax_ch, ax_cr
 
     # ═══════════════════════════════════════════════════════════════════

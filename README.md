@@ -1,6 +1,6 @@
 # zbib — NIBS 文献空白分析工具
 
-**版本 2.0** — 新增申请人前期基础分析
+**版本 2.3** — 新增知识图谱可视化 + 统一 CLI
 
 > 用于国自然标书创新性论证的文献情报学分析
 
@@ -8,7 +8,44 @@
 
 ---
 
-## 🚀 极简模式 (推荐新用户)
+## 2.3 新功能
+
+### 统一命令行入口
+
+```bash
+python zbib.py new              # 创建新项目
+python zbib.py run config.yaml  # 运行分析
+python zbib.py diagnose project # 诊断项目状态
+python zbib.py report project   # 生成 HTML 报告
+python zbib.py kg project       # 生成知识图谱
+```
+
+### 交互式知识图谱
+
+D3.js 力导向图可视化，支持：
+- **双层网络**: 概念共现 + 作者合作 + 跨层链接
+- **实时控制**: 节点数、边权重、间距、排斥力
+- **视图模式**: 全部联动 / 仅概念 / 仅作者
+- **中心性算法**: 度中心性 / 权重 / PageRank
+- **交互功能**: 搜索、缩放、双击聚焦、PNG 导出
+
+### 项目诊断
+
+```bash
+python zbib.py diagnose projects/xxx
+```
+自动检查数据完整性，0-100 评分，给出改进建议。
+
+### 综合 HTML 报告
+
+```bash
+python zbib.py report projects/xxx
+```
+整合热力图、全景图、申请人评估、知识图谱、标书建议为单一报告。
+
+---
+
+## 极简模式 (推荐新用户)
 
 只需 **4 个关键词**，自动完成全部分析：
 
@@ -47,14 +84,32 @@
 | `figs/*_supplementary.pdf` | 补充分析图 (8×5.5 in) |
 | `figs/*_applicant_p1.pdf` | 申请人图第1页 (8×6 in) |
 | `figs/*_applicant_p2.pdf` | 申请人图第2页 (8×4 in) |
+| `figs/knowledge_graph.html` | 交互式知识图谱 |
+| `full_report.html` | 综合 HTML 报告 |
 
-### 2.0 新增: 申请人前期基础分析
+---
 
-- **适配度 + 胜任力** 双维度评分 (0-100)
-- **象限定位**: 明星/潜力/跨界/边缘申请人
-- **领域基准排名**: 与同领域研究者对比百分位
-- **超图合作网络**: 稳定团队检测 (Battiston 2025)
-- **研究轨迹**: 关键词随时间演变
+## 版本历史
+
+### v2.3 (2026-02-09)
+- 统一 CLI 入口 (`zbib.py`)
+- 知识图谱可视化 (D3.js 交互式，概念+作者双层网络)
+- 项目诊断工具 (`diagnose` 命令)
+- 综合 HTML 报告生成器
+- 可视化优化：白底配色、标签背景、权重渐变透明度
+
+### v2.0 (2026-02-07)
+- 申请人前期基础分析
+- 适配度 + 胜任力双维度评分
+- 象限定位：明星/潜力/跨界/边缘申请人
+- 领域基准排名（百分位）
+- 超图合作网络（Battiston 2025）
+- 研究轨迹关键词演变
+
+### v1.0
+- 三库数据抓取（NSFC/NIH/PubMed）
+- 研究空白热力图
+- 全景图出图
 
 ---
 
@@ -62,6 +117,7 @@
 
 | 方式 | 命令 | 输入 | 适用 |
 |------|------|------|------|
+| **CLI** | `zbib.py` | 子命令 | 推荐 |
 | **极简** | `quick_start.py` | 4个关键词 | 快速试探 |
 | **向导** | `quick_search.py` | 交互问答 | 详细配置 |
 | **配置** | `run_all.py -c` | YAML文件 | 精细调整 |
@@ -83,15 +139,16 @@
 
 ## 项目文件夹结构
 
-每个课题在 `projects/` 下生成独立文件夹，包含 5 个子目录：
+每个课题在 `projects/` 下生成独立文件夹：
 
 ```
 zbib/projects/{项目名}/
 ├── parameters/    ← 配置YAML副本 + manifest.json
 ├── data/          ← 所有下载/合并的数据文件
 ├── scripts/       ← run_info.json (调用命令、复现方式)
-├── results/       ← 分析输出表格 (gap_counts, heatmap, ...)
-└── figs/          ← 所有图表 (PNG + PDF)
+├── results/       ← 分析输出 (gap_counts, heatmap, 标书材料)
+├── figs/          ← 所有图表 (PNG + PDF + HTML)
+└── full_report.html ← 综合报告
 ```
 
 **激活方式**：在 YAML 配置中设置 `project_dir` 字段：
@@ -99,10 +156,6 @@ zbib/projects/{项目名}/
 ```yaml
 project_dir: 成瘾_TPJ_社交_20260201   # → projects/成瘾_TPJ_社交_20260201/
 ```
-
-不设 `project_dir` 时，行为与旧版一致（所有文件写入 `data_dir`）。
-
-**向后兼容**：`load_data()` 优先从 `projects/.../data/` 读取，找不到时自动回退到 `data_dir`（旧的扁平目录），无需迁移旧数据。
 
 ---
 
@@ -117,83 +170,37 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-### 两个入口
-
-| | `quick_search.py` | `run_all.py` |
-|:---|:---|:---|
-| 用途 | **新课题**：生成配置 YAML → 自动跑全流程 | **已有配置**：直接执行或按步骤重跑 |
-| 输入 | `-i inputs/xxx.yaml`（简化参数）或交互问答 | `-c configs/xxx.yaml`（完整配置） |
-| 适合 | 第一次探索一个新的疾病+靶点+症状组合 | 调参后重跑、只跑分析出图等 |
-
-典型工作流：`quick_search.py` 生成配置 → 之后用 `run_all.py -c` 反复执行。
-
----
-
-### Step 1: 新课题 — `quick_search.py`（推荐起点）
-
-#### 方式一：YAML 文件模式（推荐）
-
-准备输入参数文件（参考 `inputs/` 目录下的示例）：
-
-```yaml
-# inputs/成瘾_TPJ_复吸.yaml
-letpub:
-  email: "xxx@zjnu.edu.cn"
-  password: "***"               # 留空则跳过 NSFC
-
-disease:
-  cn_keyword: "成瘾"
-  cn_filter: "成瘾|药物依赖|物质滥用"
-  en_query: '(addiction OR "substance use disorder")'
-
-intervention:
-  preset: "1"                   # 1=NIBS全部, 2=仅TMS
-
-target:
-  name: "TPJ"
-  en: 'temporoparietal junction|\bTPJ\b'
-  cn: "颞顶联合|颞顶交界"
-
-symptom:
-  name: "Relapse"
-  en: 'relapse|relapsing|reinstatement'
-  cn: "复吸|复发"
-```
+### CLI 命令 (推荐)
 
 ```bash
-cd zbib
-source venv/bin/activate
-python quick_search.py -i inputs/成瘾_TPJ_复吸.yaml
+# 创建新项目
+python zbib.py new
+
+# 运行分析
+python zbib.py run configs/my_project.yaml
+
+# 诊断项目状态
+python zbib.py diagnose projects/xxx
+
+# 生成知识图谱
+python zbib.py kg projects/xxx
+
+# 生成综合报告
+python zbib.py report projects/xxx
 ```
 
-#### 方式二：交互问答模式
-
-```bash
-python quick_search.py    # 不带 -i，逐步问答
-```
-
-### Step 2: 重跑/调参 — `run_all.py`
+### 传统入口
 
 ```bash
 # 全流程（从抓取到出图）
 python run_all.py -c configs/scz_ofc_rtms.yaml \
   --letpub-email "邮箱" --letpub-password "密码"
 
-# 只跑分析+出图（改了 YAML 参数后快速迭代）
+# 只跑分析+出图
 python run_all.py -c configs/scz_ofc_rtms.yaml --step 6
 
 # 跳过爬虫，从合并开始
 python run_all.py -c configs/scz_ofc_rtms.yaml --skip-fetch
-```
-
-### Step 3: 共现网络分析 — `run_cooccurrence.py`
-
-```bash
-# 独立运行（使用硬编码路径，适合 SCZ 旧项目）
-python run_cooccurrence.py
-
-# 配置模式（使用 Pipeline 集成，产出写入项目文件夹）
-python run_cooccurrence.py -c configs/scz_ofc_rtms.yaml
 ```
 
 ---
@@ -213,58 +220,10 @@ python run_cooccurrence.py -c configs/scz_ofc_rtms.yaml
 | 6 | `load → classify → analyze → plot` | 分析+出图 | `figs/{name}_landscape.png/.pdf` |
 | 6+ | `analyze_supplementary → plot_supplementary` | 补充分析 | `figs/{name}_supplementary.png/.pdf` |
 | — | `save_results()` | 结果存档 | `results/gap_counts.csv`, `heatmap.csv`, ... |
-| — | `_save_manifest()` | 元信息 | `parameters/manifest.json`, `scripts/run_info.json` |
+| — | `kg` | 知识图谱 | `figs/knowledge_graph.html/.json` |
+| — | `report` | 综合报告 | `full_report.html` |
 
 NSFC 数据为可选——没有 LetPub 账号也能先跑 PubMed + NIH 看初步结果。
-
----
-
-## YAML 配置文件
-
-每个课题一个 YAML（放在 `configs/` 下），核心字段：
-
-```yaml
-name: scz_ofc_rtms                   # 文件命名前缀
-title_zh: OFC-rTMS治疗精神分裂症阴性症状
-title_en: OFC-rTMS for Negative Symptoms of Schizophrenia
-
-# 数据源查询
-disease_cn_keyword: "精神分裂"        # LetPub 搜索词
-disease_cn_filter: "精神分裂症"        # 后处理过滤正则
-disease_en_query: "schizophrenia"     # PubMed/NIH 查询词
-data_dir: ../nsfc_data                # 旧数据兼容路径
-
-# 项目文件夹（设了此项才启用标准化结构）
-project_dir: SCZ_OFC_rTMS_20260201   # → projects/SCZ_OFC_rTMS_20260201/
-
-# 干预手段（空则用默认 NIBS 全家桶）
-intervention_query_en: ""
-intervention_pattern_cn: ""
-intervention_pattern_en: ""
-
-# 分析维度
-symptoms: { Negative: "negative symptom...", Positive: "positive symptom..." }
-targets: { DLPFC: "DLPFC|dorsolateral...", OFC: "OFC|orbitofrontal..." }
-highlight_target: OFC
-
-# 热力图维度（可选，标签可与 symptoms/targets 不同）
-heatmap_symptoms: { Neg: "negative symptom...", Pos: "positive symptom..." }
-heatmap_targets: { DLPFC: "dorsolateral...", OFC: "orbitofrontal..." }
-
-# Gap 分析
-gap_patterns: { ofc: "OFC|orbitofrontal...", neg: "negative symptom..." }
-gap_combinations: { PubMed_OFC_Neg: [ofc, neg], ... }
-
-# Panel E 关键文献
-key_papers: [{ year: 2023, journal: "...", author: "...", desc: "..." }]
-panel_e_title: "..."
-panel_e_summary: "..."
-
-# 疾病负担检索（Panel A）
-burden_query: "schizophrenia AND negative symptoms"
-```
-
-完整字段参见 `scripts/config.py` 中的 `TopicConfig` 和 `ProjectLayout` 类定义。
 
 ---
 
@@ -287,31 +246,20 @@ pipe.save_results(analysis)              # → results/
 data = pipe.build_plot_data(analysis)
 pipe.plot(data)                          # → figs/
 
-# 补充分析
-supp = pipe.analyze_supplementary()
-pipe.plot_supplementary(supp)            # → figs/
+# 知识图谱
+from scripts.knowledge_graph import KnowledgeGraph
+kg = KnowledgeGraph()
+kg.build_from_papers(df, concept_col=['keywords', 'mesh'])
+kg.export_interactive('figs/knowledge_graph.html')
 
-# 共现网络（集成模式）
-pipe.run_cooccurrence()                  # → figs/ + results/
+# 项目诊断
+from scripts.diagnostic import diagnose_project, print_diagnostic
+result = diagnose_project('projects/xxx')
+print_diagnostic(result)
 
-# 保存复现信息
-pipe._save_manifest()                    # → parameters/ + scripts/
-```
-
-### 单独使用 fetch 客户端
-
-```python
-from scripts.fetch import PubMedClient, NIHClient
-
-pm = PubMedClient()
-df = pm.search('(rTMS OR TMS) AND schizophrenia')
-
-nih = NIHClient()
-df = nih.search('schizophrenia', fy_min=2015)
-
-# NIH 项目 → 关联文献
-link_df, full_df = nih.fetch_publications_full(
-    ['R01MH112189', 'R01MH123456'], pubmed_client=pm)
+# 综合报告
+from scripts.report_generator import generate_full_report
+generate_full_report('projects/xxx')
 ```
 
 ---
@@ -320,7 +268,8 @@ link_df, full_df = nih.fetch_publications_full(
 
 ```
 zbib/
-├── run_all.py                  # 主入口
+├── zbib.py                     # 统一 CLI 入口 (v2.3)
+├── run_all.py                  # 传统入口
 ├── run_cooccurrence.py         # 共现网络分析入口
 ├── quick_search.py             # 新课题快速检索入口
 ├── requirements.txt
@@ -340,19 +289,22 @@ zbib/
 │   ├── analyze.py              #   分类 & 空白分析
 │   ├── keywords.py             #   关键词分析 & 趋势预测
 │   ├── network.py              #   共现网络
+│   ├── knowledge_graph.py      #   知识图谱可视化 (v2.3)
+│   ├── diagnostic.py           #   项目诊断 (v2.3)
+│   ├── report_generator.py     #   综合报告生成 (v2.3)
+│   ├── progress.py             #   进度显示 (v2.3)
 │   ├── performance.py          #   PI/机构排名
 │   ├── quality.py              #   数据质量评估
 │   ├── journals.py             #   顶刊列表
 │   └── plot.py                 #   出图
 ├── projects/                   # 项目产出（每个课题一个文件夹）
-│   ├── 成瘾_TPJ_社交_20260201/
-│   │   ├── parameters/         #   YAML副本 + manifest.json
-│   │   ├── data/               #   PubMed/NIH/NSFC 数据文件
-│   │   ├── scripts/            #   run_info.json (复现命令)
-│   │   ├── results/            #   gap_counts.csv, heatmap.csv, ...
-│   │   └── figs/               #   landscape + supplementary PNG/PDF
-│   └── 肥胖_OFC_OE_20260131/
-│       └── ...
+│   └── {项目名}/
+│       ├── parameters/         #   YAML副本 + manifest.json
+│       ├── data/               #   PubMed/NIH/NSFC 数据文件
+│       ├── scripts/            #   run_info.json (复现命令)
+│       ├── results/            #   gap_counts.csv, heatmap.csv, ...
+│       ├── figs/               #   landscape + KG + supplementary
+│       └── full_report.html    #   综合 HTML 报告
 └── venv/
 ```
 
@@ -362,9 +314,7 @@ zbib/
 
 - LetPub 下载的 `.xls` 是 OLE2 格式，需 `xlrd` + `ignore_workbook_corruption=True`
 - LetPub 搜索"精神分裂"会模糊匹配"精神"和"分裂"，需后处理 `disease_cn_filter` 过滤
-- LetPub 某些年份可能返回 404（网络问题），重试通常可恢复；确认 0 条时属正常
 - NIH Reporter API `offset` 上限 14,999，大结果集自动按 `fiscal_year` 分批
 - PubMed E-utilities 无 API key 限制 3 req/s
-- LetPub 页面用 `wait_until="domcontentloaded"`（`"networkidle"` 会超时）
 - NSFC 数据可选：无 LetPub 账号时仍可跑 PubMed + NIH 分析
-- `heatmap_symptoms`/`heatmap_targets` 支持与 `symptoms`/`targets` 不同的短标签
+- NumPy 2.x 与旧版 matplotlib 不兼容，使用 `sys.modules` 补丁绕过

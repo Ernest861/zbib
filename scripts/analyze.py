@@ -59,20 +59,47 @@ class AspectClassifier:
                     result[name] += 1
         return result
 
-    def build_matrix(self, texts, row_aspects: 'AspectClassifier', col_aspects: 'AspectClassifier') -> pd.DataFrame:
-        """构建交叉计数矩阵 (row_aspects × col_aspects)"""
+    def build_matrix(self, texts, row_aspects: 'AspectClassifier', col_aspects: 'AspectClassifier',
+                      include_other: bool = True) -> pd.DataFrame:
+        """构建交叉计数矩阵 (row_aspects × col_aspects)
+
+        Args:
+            texts: 文本序列
+            row_aspects: 行维度分类器（如症状）
+            col_aspects: 列维度分类器（如靶点）
+            include_other: 是否添加 "Other" 行（不属于任何行维度的文献）
+
+        Returns:
+            DataFrame，行=症状，列=靶点，值=交集文献数
+        """
         import numpy as np
         rows = list(row_aspects.aspects.keys())
         cols = list(col_aspects.aspects.keys())
-        matrix = np.zeros((len(rows), len(cols)))
+
+        # 如果需要 Other 行，添加到末尾
+        if include_other:
+            rows_with_other = rows + ['Other']
+            matrix = np.zeros((len(rows) + 1, len(cols)))
+        else:
+            rows_with_other = rows
+            matrix = np.zeros((len(rows), len(cols)))
+
         for text in texts:
             t = str(text)
-            for ri, rk in enumerate(rows):
-                if row_aspects.aspects[rk].search(t):
-                    for ci, ck in enumerate(cols):
-                        if col_aspects.aspects[ck].search(t):
+            # 检查每个列（靶点）
+            for ci, ck in enumerate(cols):
+                if col_aspects.aspects[ck].search(t):
+                    # 检查行（症状），记录是否匹配到任何症状
+                    matched_any_row = False
+                    for ri, rk in enumerate(rows):
+                        if row_aspects.aspects[rk].search(t):
                             matrix[ri, ci] += 1
-        return pd.DataFrame(matrix, index=rows, columns=cols)
+                            matched_any_row = True
+                    # 如果没有匹配任何症状，计入 Other
+                    if include_other and not matched_any_row:
+                        matrix[len(rows), ci] += 1
+
+        return pd.DataFrame(matrix, index=rows_with_other, columns=cols)
 
 
 class GapAnalyzer:

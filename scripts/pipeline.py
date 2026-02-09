@@ -33,6 +33,10 @@ from scripts.plot import LandscapePlot
 from scripts.performance import PerformanceAnalyzer
 from scripts.quality import QualityReporter
 from scripts.analyze import TrendDetector
+from scripts.domain_knowledge import expand_config_dimensions, get_disease_dimensions
+from scripts.knowledge_graph import KnowledgeGraph
+from scripts.llm_client import LLMClient, LLMConfig
+from scripts.report_generator import generate_full_report
 
 
 class Pipeline:
@@ -381,18 +385,40 @@ class Pipeline:
     def analyze_gaps(self) -> dict:
         cfg = self.cfg
 
-        # Aspect counts
-        symptom_clf = AspectClassifier(cfg.symptoms)
-        target_clf = AspectClassifier(cfg.targets)
+        # 扩展维度：使用领域知识库补充用户配置
+        highlight_symptom = list(cfg.symptoms.keys())[0] if cfg.symptoms else None
+        highlight_target = cfg.highlight_target or (list(cfg.targets.keys())[0] if cfg.targets else None)
+
+        expanded = expand_config_dimensions(
+            disease=cfg.disease_en_query,
+            user_symptoms=cfg.symptoms,
+            user_targets=cfg.targets,
+            highlight_symptom=highlight_symptom,
+            highlight_target=highlight_target,
+        )
+
+        # 使用扩展后的维度进行分析
+        expanded_symptoms = expanded['symptoms']
+        expanded_targets = expanded['targets']
+        self._expanded_symptoms_cn = expanded['symptoms_cn']  # 保存中文名映射
+        self._expanded_targets_cn = expanded['targets_cn']
+
+        # Aspect counts (使用扩展维度)
+        symptom_clf = AspectClassifier(expanded_symptoms)
+        target_clf = AspectClassifier(expanded_targets)
         pubmed_targets = target_clf.count(self.pubmed['text'])
         pubmed_symptoms = symptom_clf.count(self.pubmed['text'])
 
-        # Heatmap (may use different labels than main symptoms/targets)
-        hm_symp = AspectClassifier(cfg.heatmap_symptoms or cfg.symptoms)
-        hm_targ = AspectClassifier(cfg.heatmap_targets or cfg.targets)
-        heatmap_df = hm_symp.build_matrix(self.pubmed['text'], hm_symp, hm_targ)
+        # Heatmap (使用扩展维度，或用户指定的热力图维度)
+        hm_symp = AspectClassifier(cfg.heatmap_symptoms or expanded_symptoms)
+        hm_targ = AspectClassifier(cfg.heatmap_targets or expanded_targets)
+        heatmap_df = hm_symp.build_matrix(self.pubmed['text'], hm_symp, hm_targ, include_other=True)
         hm_symptom_counts = hm_symp.count(self.pubmed['text'])
         hm_target_counts = hm_targ.count(self.pubmed['text'])
+
+        # 计算 Other 行的总和（不属于任何症状维度的文献）
+        if 'Other' in heatmap_df.index:
+            hm_symptom_counts['Other'] = int(heatmap_df.loc['Other'].sum())
 
         # Gap counts
         gap_analyzer = GapAnalyzer(cfg.gap_patterns)
@@ -925,6 +951,167 @@ class Pipeline:
             display_cats=self.cfg.display_cats,
             highlight_target=self.cfg.highlight_target)
 
+    # ─── Knowledge Graph (3.0) ─────────────────
+    def build_knowledge_graph(self, include_applicant: bool = True) -> dict:
+        """
+        构建研究知识图谱 (zbib 3.0 功能)。
+
+        生成概念共现网络和作者合作网络的交互式可视化。
+
+        Args:
+            include_applicant: 是否包含申请人数据
+
+        Returns:
+            {'nodes': int, 'edges': int, 'output': str}
+        """
+        out_dir = self.layout.figs if self.layout else self.data_dir
+
+        # 收集数据源
+        dfs = []
+
+        # PubMed 数据
+        if self.pubmed is not None and len(self.pubmed) > 0:
+            pubmed_df = self.pubmed.copy()
+            # 确保必要列存在
+            if 'keywords' not in pubmed_df.columns and 'mesh' in pubmed_df.columns:
+                pubmed_df['keywords'] = pubmed_df['mesh']
+            dfs.append(pubmed_df)
+
+        # 申请人数据
+        if include_applicant and self.layout:
+            applicant_path = self.layout.data / 'applicant_pubs.csv'
+            if applicant_path.exists():
+                try:
+                    app_df = pd.read_csv(applicant_path)
+                    dfs.append(app_df)
+                except Exception:
+                    pass
+            else:
+                # 尝试压缩格式
+                for gz_path in self.layout.data.glob('applicant_*_all.csv.gz'):
+                    try:
+                        app_df = pd.read_csv(gz_path, compression='gzip')
+                        dfs.append(app_df)
+                        break
+                    except Exception:
+                        pass
+
+        if not dfs:
+            print("[KG] 无可用数据，跳过知识图谱构建")
+            return {'nodes': 0, 'edges': 0, 'output': ''}
+
+        # 合并数据
+        combined = pd.concat(dfs, ignore_index=True)
+        print(f"[KG] 合并 {len(combined)} 篇文献用于知识图谱")
+
+        # 构建图谱
+        kg = KnowledgeGraph()
+        kg.build_from_papers(
+            combined,
+            concept_col='keywords',
+            author_col='authors',
+            year_col='year',
+            min_concept_freq=3,
+            min_author_freq=2,
+        )
+
+        # 导出
+        output_base = out_dir / 'knowledge_graph'
+        kg.export_json(output_base.with_suffix('.json'))
+        kg.export_interactive(
+            output_base.with_suffix('.html'),
+            title=f'{self.cfg.name} 研究知识图谱'
+        )
+
+        result = {
+            'nodes': len(kg.nodes),
+            'edges': len(kg.edges),
+            'output': str(output_base),
+            'top_concepts': kg.get_top_concepts(10),
+            'top_authors': kg.get_top_authors(10),
+        }
+
+        print(f"[KG] 知识图谱: {result['nodes']} 节点, {result['edges']} 边")
+        return result
+
+    # ─── LLM Content Generation (3.0) ──────────
+    def generate_llm_content(self, analysis: dict) -> dict | None:
+        """
+        使用 LLM 生成标书辅助内容 (zbib 3.0 功能)。
+
+        需要配置 ANTHROPIC_API_KEY 环境变量。
+
+        Args:
+            analysis: analyze_gaps() 返回的分析结果
+
+        Returns:
+            {'gap_narrative': str, 'innovation': str} 或 None (若 LLM 不可用)
+        """
+        import os
+        if not os.getenv('ANTHROPIC_API_KEY'):
+            print("[LLM] 跳过 — 未设置 ANTHROPIC_API_KEY")
+            return None
+
+        try:
+            client = LLMClient()
+            if not client.available:
+                print("[LLM] 跳过 — LLM 客户端不可用")
+                return None
+
+            out_dir = self.layout.results if self.layout else self.data_dir
+            results = {}
+
+            # 1. 研究空白描述
+            heatmap_path = out_dir / 'heatmap.csv'
+            if heatmap_path.exists():
+                heatmap_df = pd.read_csv(heatmap_path, index_col=0)
+                print("[LLM] 生成研究空白描述...")
+                results['gap_narrative'] = client.describe_research_gap(heatmap_df)
+
+            # 2. 创新点论述
+            if self.applicant_profile:
+                gap_evidence = {
+                    'OFC_papers': analysis.get('pubmed_ofc', 0),
+                    'OFC_Negative': analysis.get('pubmed_ofc_symptom', 0),
+                    'total_papers': analysis.get('pubmed_total', 0),
+                }
+                applicant_strengths = {
+                    'fit_score': self.applicant_profile.fit_score,
+                    'competency_score': self.applicant_profile.competency_score,
+                    'disease_nibs_cross': self.applicant_profile.n_disease_nibs,
+                }
+                print("[LLM] 生成创新点论述...")
+                results['innovation'] = client.generate_innovation_argument(
+                    gap_evidence=gap_evidence,
+                    applicant_strengths=applicant_strengths,
+                    target=self.cfg.highlight_target or 'OFC',
+                    symptom=self.cfg.highlight_symptom or '阴性症状',
+                )
+
+            # 保存结果
+            if results:
+                llm_output = out_dir / 'llm_generated.md'
+                content = "# LLM 生成内容\n\n"
+                content += f"> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+
+                if 'gap_narrative' in results:
+                    content += "## 研究空白描述\n\n"
+                    content += results['gap_narrative'] + "\n\n"
+
+                if 'innovation' in results:
+                    content += "## 创新点论述\n\n"
+                    content += results['innovation'] + "\n\n"
+
+                content += "---\n*由 zbib 3.0 LLM 模块自动生成*\n"
+                llm_output.write_text(content, encoding='utf-8')
+                print(f"[LLM] 已保存 → {llm_output}")
+
+            return results
+
+        except Exception as e:
+            print(f"[LLM] 生成失败: {e}")
+            return None
+
     # ─── Manifest & Results ────────────────────
     def _save_manifest(self):
         """YAML副本 + manifest.json → parameters/"""
@@ -1075,6 +1262,77 @@ class Pipeline:
 **结论**: {target_name} + {symptom_name}交叉领域仅 **{n_target_symptom} 篇** — 明确的研究空白。
 
 """
+
+        # 热力图空白矩阵分析
+        if analysis and 'heatmap_df' in analysis:
+            hm = analysis['heatmap_df']
+            hm_target_counts = analysis.get('hm_target_counts', {})
+
+            # 获取 DLPFC 数据作为对比
+            dlpfc_count = hm_target_counts.get('DLPFC', 0)
+            ofc_count = hm_target_counts.get(target_name, 0)
+
+            report += f"""### 1.3 靶点×症状维度空白矩阵
+
+基于 {n_pubmed} 篇 TMS+{disease_cn} 文献的多维度交叉分析：
+
+**靶点研究不均衡**：
+
+| 靶点 | 文献数 | 占比 |
+|------|--------|------|
+| DLPFC | {dlpfc_count} | {dlpfc_count/n_pubmed*100:.1f}% |
+| ACC | {hm_target_counts.get('ACC', 0)} | {hm_target_counts.get('ACC', 0)/n_pubmed*100:.1f}% |
+| **{target_name}** | **{ofc_count}** | **{ofc_count/n_pubmed*100:.1f}%** |
+
+> {target_name} 文献仅为 DLPFC 的 **{ofc_count/max(dlpfc_count,1)*100:.1f}%**
+
+**{target_name} × 症状维度交叉**：
+
+| 症状 | {target_name} | DLPFC | 差距 |
+|------|------|-------|------|
+"""
+            # 添加主要症状维度
+            main_symptoms = ['Negative', 'Positive', 'Cognitive', 'AVH']
+            for symp in main_symptoms:
+                if symp in hm.index:
+                    target_val = int(hm.loc[symp, target_name]) if target_name in hm.columns else 0
+                    dlpfc_val = int(hm.loc[symp, 'DLPFC']) if 'DLPFC' in hm.columns else 0
+                    ratio = f"{dlpfc_val/max(target_val,1):.1f}倍" if target_val > 0 else "**完全空白**"
+                    report += f"| {symp} | {target_val} | {dlpfc_val} | {ratio} |\n"
+
+            # 完全空白组合
+            zeros = []
+            for symp in hm.index:
+                for targ in hm.columns:
+                    if hm.loc[symp, targ] == 0 and symp != 'Other':
+                        zeros.append(f"{targ}+{symp}")
+
+            if zeros:
+                report += f"""
+**完全空白组合** ({len(zeros)} 个)：{', '.join(zeros[:6])}{'...' if len(zeros) > 6 else ''}
+
+"""
+
+            # 热力图数据表格
+            report += f"""**完整热力图数据**：
+
+| 症状\\靶点 | {' | '.join(hm.columns)} |
+|:-----|{'|'.join([':---:'] * len(hm.columns))}|
+"""
+            for symp in hm.index:
+                vals = [str(int(hm.loc[symp, col])) for col in hm.columns]
+                # 高亮 target 列
+                if target_name in hm.columns:
+                    idx = list(hm.columns).index(target_name)
+                    vals[idx] = f"**{vals[idx]}**"
+                report += f"| {symp} | {' | '.join(vals)} |\n"
+
+            report += f"""
+> * 单元格为交集计数，一篇文献可涉及多个维度
+> * {target_name} + {symptom_name} 仅 {n_target_symptom} 篇，仅为研究热点的 {n_target_symptom/max(hm.max().max(),1)*100:.1f}%
+
+"""
+
         # 关键文献 (key_papers)
         if cfg.key_papers:
             report += f"""### 1.3 关键文献 ({target_name} + {symptom_name} 交集)
@@ -1454,12 +1712,36 @@ class Pipeline:
             except Exception as e:
                 print(f"[Cooccurrence] 共现分析失败: {e}")
 
+            # ─── 知识图谱 (3.0 功能) ───
+            try:
+                print("─── 知识图谱构建 ───")
+                kg_result = self.build_knowledge_graph()
+                if kg_result.get('nodes', 0) > 0:
+                    print(f"[KG] 交互式可视化 → {kg_result['output']}.html")
+            except Exception as e:
+                print(f"[KG] 知识图谱构建失败: {e}")
+
             # ─── NSFC 标书支撑报告 (内置功能) ───
             try:
                 print("─── 生成标书支撑材料 ───")
                 self.generate_nsfc_report(analysis)
             except Exception as e:
                 print(f"[Report] 标书报告生成失败: {e}")
+
+            # ─── LLM 内容生成 (3.0 可选功能) ───
+            try:
+                print("─── LLM 内容生成 ───")
+                self.generate_llm_content(analysis)
+            except Exception as e:
+                print(f"[LLM] 内容生成失败: {e}")
+
+            # ─── 综合 HTML 报告 (3.0 功能) ───
+            try:
+                print("─── 生成综合报告 ───")
+                if self.layout:
+                    generate_full_report(self.layout.root)
+            except Exception as e:
+                print(f"[Report] 综合报告生成失败: {e}")
 
             self._save_manifest()
             print("═══ Done ═══")

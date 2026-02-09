@@ -9,6 +9,7 @@ scripts/
 ├── __init__.py          # 包初始化
 ├── config.py            # 配置数据类 (TopicConfig, ApplicantConfig)
 ├── pipeline.py          # 主流程编排 (Pipeline 类)
+├── domain_knowledge.py  # 疾病领域知识库 ★ 新增
 ├── fetch.py             # PubMed + NIH 检索
 ├── fetch_applicant.py   # 申请人文献检索
 ├── analyze.py           # 分类与空白分析
@@ -20,6 +21,36 @@ scripts/
 ├── applicant/           # 申请人分析包
 └── ...
 ```
+
+## 领域知识库 (`domain_knowledge.py`)
+
+基于 PubMed 文献综合分析，自动扩展热力图分析维度：
+
+```python
+from scripts.domain_knowledge import expand_config_dimensions, list_dimensions
+
+# 查看精神分裂症的所有维度
+dims = list_dimensions('schizophrenia')
+# 症状: Negative, Positive, Cognitive, AVH, Disorganization
+# 靶点: DLPFC, OFC, TPJ, mPFC, ACC, Cerebellum, STS
+
+# 扩展用户配置
+expanded = expand_config_dimensions(
+    disease='schizophrenia',
+    user_symptoms={'Negative': 'negative.*'},  # 用户只配置了1个
+    highlight_target='OFC',
+)
+# 自动扩展为5个症状 × 7个靶点
+```
+
+**已收录疾病**:
+
+| 疾病 | 症状维度 | 靶点维度 |
+|------|---------|---------|
+| schizophrenia | 5 | 7 |
+| depression | 6 | 6 |
+| addiction | 5 | 6 |
+| ocd | 4 | 5 |
 
 ## 核心类
 
